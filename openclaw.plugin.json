@@ -1,0 +1,47 @@
+{
+  "id": "perkos-a2a",
+  "name": "PerkOS A2A",
+  "version": "0.1.0",
+  "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
+  "author": "PerkOS",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agentName": {
+        "type": "string",
+        "description": "This agent's name in the council"
+      },
+      "port": {
+        "type": "number",
+        "default": 5000,
+        "description": "Port for the A2A HTTP server"
+      },
+      "skills": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "tags": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "description": "Skills this agent exposes via A2A"
+      },
+      "peers": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Map of peer agent names to their A2A URLs"
+      }
+    }
+  },
+  "uiHints": {
+    "agentName": { "label": "Agent Name", "placeholder": "mimir" },
+    "port": { "label": "A2A Server Port" },
+    "peers": { "label": "Peer Agents (name → URL)" }
+  }
+}

@@ -1,15 +1,15 @@
 /**
- * @perkos/a2a — OpenClaw Plugin
- * 
+ * @perkos/perkos-a2a -- OpenClaw Plugin
+ *
  * Agent-to-Agent (A2A) protocol communication plugin.
  * Adds tools for agents to discover peers, send tasks, and check task status.
  * Runs an A2A-compliant HTTP server alongside the OpenClaw gateway.
  */
 
-import { A2AServer } from "./server.js";
+import { A2AServer, detectNetworking } from "./server.js";
 import type { A2APluginConfig } from "./types.js";
 
-export { A2AServer } from "./server.js";
+export { A2AServer, detectNetworking } from "./server.js";
 export * from "./types.js";
 
 export default function register(api: any) {
@@ -216,16 +216,18 @@ export default function register(api: any) {
     respond(true, {
       agent: pluginConfig.agentName,
       port: pluginConfig.port,
+      mode: pluginConfig.mode || "auto",
+      clientOnly: server.isClientOnly(),
       peers: Object.keys(pluginConfig.peers),
       protocol: "a2a",
-      version: "0.3.0",
+      version: "0.4.0",
     });
   });
 
   // CLI command
   api.registerCli(
     ({ program }: any) => {
-      const cmd = program.command("a2a").description("A2A protocol tools");
+      const cmd = program.command("perkos-a2a").description("PerkOS A2A protocol tools");
 
       cmd
         .command("status")
@@ -233,7 +235,9 @@ export default function register(api: any) {
         .action(async () => {
           console.log(`Agent: ${pluginConfig.agentName}`);
           console.log(`Port: ${pluginConfig.port}`);
-          console.log(`Peers: ${Object.keys(pluginConfig.peers).join(", ")}`);
+          console.log(`Mode: ${pluginConfig.mode || "auto"}`);
+          console.log(`Client-only: ${server.isClientOnly()}`);
+          console.log(`Peers: ${Object.keys(pluginConfig.peers).join(", ") || "(none)"}`);
         });
 
       cmd
@@ -243,7 +247,7 @@ export default function register(api: any) {
           const peers = await server.discoverPeers();
           for (const [name, info] of Object.entries(peers)) {
             console.log(
-              `${name}: ${info.status}${info.card ? ` — ${info.card.description}` : ""}`
+              `${name}: ${info.status}${info.card ? ` -- ${info.card.description}` : ""}`
             );
           }
         });
@@ -254,6 +258,70 @@ export default function register(api: any) {
         .action(async (target: string, message: string) => {
           const result = await server.sendTask(target, message);
           console.log(JSON.stringify(result, null, 2));
+        });
+
+      cmd
+        .command("setup")
+        .description("Detect networking environment and show recommendations")
+        .action(async () => {
+          console.log("[perkos-a2a] Detecting environment...\n");
+
+          const isMac = process.platform === "darwin";
+          console.log(`Platform: ${process.platform}${isMac ? " (macOS)" : ""}`);
+
+          const net = await detectNetworking();
+          console.log(`Public IP: ${net.publicIp || "unknown"}`);
+          console.log(`Local IPs: ${net.localIps.join(", ") || "none"}`);
+          console.log(`Behind NAT: ${net.isBehindNat ? "yes" : "no"}`);
+          console.log(`Tailscale: ${net.hasTailscale ? "installed" : "not found"}${net.tailscaleIp ? ` (${net.tailscaleIp})` : ""}`);
+
+          // Check port availability
+          let portAvailable = true;
+          try {
+            const netMod = await import("net");
+            await new Promise<void>((resolve, reject) => {
+              const srv = netMod.createServer();
+              srv.once("error", (err: NodeJS.ErrnoException) => {
+                if (err.code === "EADDRINUSE") {
+                  portAvailable = false;
+                  resolve();
+                } else {
+                  reject(err);
+                }
+              });
+              srv.listen(pluginConfig.port, () => {
+                srv.close(() => resolve());
+              });
+            });
+          } catch {
+            // ignore
+          }
+          console.log(`Port ${pluginConfig.port}: ${portAvailable ? "available" : "IN USE"}`);
+
+          console.log("\n--- Recommendations ---\n");
+
+          if (!net.isBehindNat) {
+            console.log("You're good! Configure peers with your public IP.");
+            console.log(`  Your A2A URL: http://${net.publicIp}:${pluginConfig.port}/a2a/jsonrpc`);
+          } else if (net.hasTailscale && net.tailscaleIp) {
+            console.log("Use your Tailscale IP for peers.");
+            console.log(`  Your A2A URL: http://${net.tailscaleIp}:${pluginConfig.port}/a2a/jsonrpc`);
+          } else {
+            console.log("You are behind NAT. Options:");
+            console.log("  1) Install Tailscale (recommended) - https://tailscale.com");
+            console.log("  2) Set up a Cloudflare Tunnel");
+            console.log('  3) Client-only mode (can send tasks but not receive) - set mode: "client-only"');
+          }
+
+          if (!portAvailable) {
+            console.log(`\nWarning: Port ${pluginConfig.port} is in use. Change the port in your config or stop the conflicting service.`);
+          }
+
+          console.log("\n--- Current Config ---\n");
+          console.log(`Agent: ${pluginConfig.agentName}`);
+          console.log(`Port: ${pluginConfig.port}`);
+          console.log(`Mode: ${pluginConfig.mode || "auto"}`);
+          console.log(`Peers: ${JSON.stringify(pluginConfig.peers, null, 2)}`);
         });
     },
     { commands: ["perkos-a2a"] }

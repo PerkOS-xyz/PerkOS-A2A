@@ -80,4 +80,5 @@ export interface A2APluginConfig {
   port: number;
   skills: AgentSkill[];
   peers: PeerConfig;
+  mode?: "full" | "client-only" | "auto";
 }

@@ -1,11 +1,12 @@
 /**
  * A2A Protocol Server
  * Express-based JSON-RPC 2.0 server with Agent Card discovery
+ * Supports full, client-only, and auto modes for NAT-friendly operation
  */
 
 import express from "express";
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+import { homedir, networkInterfaces } from "os";
 import type {
   AgentCard,
   Task,
@@ -14,12 +15,62 @@ import type {
   A2APluginConfig,
 } from "./types.js";
 
+/** Detect if the host is behind NAT by comparing public IP to local interfaces */
+export async function detectNetworking(): Promise<{
+  isBehindNat: boolean;
+  publicIp: string | null;
+  localIps: string[];
+  hasTailscale: boolean;
+  tailscaleIp: string | null;
+}> {
+  const localIps: string[] = [];
+  const ifaces = networkInterfaces();
+  for (const addrs of Object.values(ifaces)) {
+    if (!addrs) continue;
+    for (const a of addrs) {
+      if (!a.internal && a.family === "IPv4") {
+        localIps.push(a.address);
+      }
+    }
+  }
+
+  let publicIp: string | null = null;
+  try {
+    const res = await fetch("https://api.ipify.org?format=text", {
+      signal: AbortSignal.timeout(5000),
+    });
+    publicIp = (await res.text()).trim();
+  } catch {
+    // unable to reach internet
+  }
+
+  const isBehindNat = publicIp !== null && !localIps.includes(publicIp);
+
+  let hasTailscale = false;
+  let tailscaleIp: string | null = null;
+  try {
+    const { execSync } = await import("child_process");
+    execSync("which tailscale", { stdio: "ignore" });
+    hasTailscale = true;
+    try {
+      tailscaleIp = execSync("tailscale ip -4", { encoding: "utf-8" }).trim();
+    } catch {
+      // tailscale installed but not connected
+    }
+  } catch {
+    // tailscale not installed
+  }
+
+  return { isBehindNat, publicIp, localIps, hasTailscale, tailscaleIp };
+}
+
 export class A2AServer {
   private app: express.Express;
   private tasks: Map<string, Task> = new Map();
   private agentCard: AgentCard;
   private config: A2APluginConfig;
   private logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
+  private clientOnly = false;
 
   constructor(
     config: A2APluginConfig,
@@ -45,28 +96,28 @@ export class A2AServer {
     this.setupRoutes();
   }
 
+  isClientOnly(): boolean {
+    return this.clientOnly;
+  }
+
   private setupRoutes(): void {
-    // Agent Card discovery
     this.app.get("/.well-known/agent-card.json", (_req, res) => {
       res.json(this.agentCard);
     });
 
-    // Health check
     this.app.get("/health", (_req, res) => {
       res.json({
         ok: true,
         agent: this.config.agentName,
         protocol: "a2a",
-        version: "0.3.0",
+        version: "0.4.0",
         peers: Object.keys(this.config.peers),
         taskCount: this.tasks.size,
       });
     });
 
-    // JSON-RPC 2.0 endpoint
     this.app.post("/a2a/jsonrpc", async (req, res) => {
       const { method, params, id } = req.body;
-
       try {
         let result: JsonRpcResponse;
         switch (method) {
@@ -91,12 +142,11 @@ export class A2AServer {
         res.json(result);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`[a2a] RPC error: ${msg}`);
+        this.logger.error(`[perkos-a2a] RPC error: ${msg}`);
         res.json(this.error(id, -32603, msg));
       }
     });
 
-    // Peer discovery
     this.app.get("/a2a/peers", async (_req, res) => {
       const results: Record<string, unknown> = {};
       for (const [name, url] of Object.entries(this.config.peers)) {
@@ -112,7 +162,6 @@ export class A2AServer {
       res.json(results);
     });
 
-    // Send task to peer (REST convenience)
     this.app.post("/a2a/send", async (req, res) => {
       const { target, message } = req.body;
       try {
@@ -147,12 +196,10 @@ export class A2AServer {
 
     this.tasks.set(taskId, task);
     this.logger.info(
-      `[a2a] Task ${taskId} received from ${task.metadata?.fromAgent}`
+      `[perkos-a2a] Task ${taskId} received from ${task.metadata?.fromAgent}`
     );
 
-    // Process asynchronously
     this.processTask(task);
-
     return this.success(rpcId, task);
   }
 
@@ -165,7 +212,6 @@ export class A2AServer {
       .map((p) => p.text)
       .join("\n");
 
-    // Write task to workspace for OpenClaw agent to process
     try {
       const fs = await import("fs");
       const taskDir = (this.config as any).workspacePath
@@ -201,7 +247,7 @@ export class A2AServer {
         timestamp: new Date().toISOString(),
       };
 
-      this.logger.info(`[a2a] Task ${task.id} completed`);
+      this.logger.info(`[perkos-a2a] Task ${task.id} completed`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       task.status = {
@@ -212,7 +258,7 @@ export class A2AServer {
           parts: [{ kind: "text", text: msg }],
         },
       };
-      this.logger.error(`[a2a] Task ${task.id} failed: ${msg}`);
+      this.logger.error(`[perkos-a2a] Task ${task.id} failed: ${msg}`);
     }
   }
 
@@ -309,7 +355,41 @@ export class A2AServer {
     return { jsonrpc: "2.0", id, error: { code, message } };
   }
 
-  start(): void {
+  async start(): Promise<void> {
+    const mode = this.config.mode || "auto";
+
+    if (mode === "client-only") {
+      this.clientOnly = true;
+      this.logger.info(
+        "[perkos-a2a] Running in client-only mode. To enable bidirectional A2A, set up Tailscale or a tunnel."
+      );
+      return;
+    }
+
+    if (mode === "full") {
+      this.tryListen(this.config.port);
+      return;
+    }
+
+    // auto mode: detect networking, decide
+    try {
+      const net = await detectNetworking();
+      if (net.isBehindNat && !net.hasTailscale) {
+        this.logger.info(
+          "[perkos-a2a] Running in client-only mode (behind NAT). To enable bidirectional A2A, set up Tailscale or a tunnel."
+        );
+        this.clientOnly = true;
+        return;
+      }
+      if (net.isBehindNat && net.hasTailscale && net.tailscaleIp) {
+        this.logger.info(
+          `[perkos-a2a] Behind NAT but Tailscale detected (${net.tailscaleIp}). Starting server.`
+        );
+      }
+    } catch {
+      // detection failed, try to start anyway
+    }
+
     this.tryListen(this.config.port);
   }
 
@@ -318,25 +398,27 @@ export class A2AServer {
     try {
       const srv = this.app.listen(port, "0.0.0.0", () => {
         this.logger.info(
-          `[a2a] ${this.config.agentName} server on port ${port}`
+          `[perkos-a2a] ${this.config.agentName} server on port ${port}`
         );
-        // Update agent card URL to reflect actual port
         this.agentCard.url = `http://localhost:${port}/a2a/jsonrpc`;
       });
       srv.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE" && attempt < maxAttempts) {
           const nextPort = port + 1;
-          this.logger.info(`[a2a] Port ${port} in use, trying ${nextPort}`);
+          this.logger.info(`[perkos-a2a] Port ${port} in use, trying ${nextPort}`);
           this.tryListen(nextPort, attempt + 1);
         } else if (err.code === "EADDRINUSE") {
-          this.logger.error(`[a2a] Ports ${this.config.port}-${port} all in use, giving up`);
+          this.logger.info(
+            `[perkos-a2a] Ports ${this.config.port}-${port} all in use. Falling back to client-only mode.`
+          );
+          this.clientOnly = true;
         } else {
-          this.logger.error(`[a2a] Server error: ${err.message}`);
+          this.logger.error(`[perkos-a2a] Server error: ${err.message}`);
         }
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[a2a] Failed to start server: ${msg}`);
+      this.logger.error(`[perkos-a2a] Failed to start server: ${msg}`);
     }
   }
 

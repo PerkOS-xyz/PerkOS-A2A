@@ -1,6 +1,6 @@
 {
-  "name": "@perkos/a2a",
-  "version": "0.3.0",
+  "name": "@perkos/perkos-a2a",
+  "version": "0.3.5",
   "description": "A2A Protocol communication plugin for OpenClaw \u2014 Agent-to-Agent protocol implementation",
   "type": "module",
   "main": "dist/index.js",
@@ -18,7 +18,12 @@
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "install": {
+      "npmSpec": "@perkos/perkos-a2a",
+      "localPath": "extensions/perkos-a2a",
+      "defaultChoice": "npm"
+    }
   },
   "keywords": [
     "openclaw",

@@ -455,7 +455,7 @@ On macOS, **port 5000 is used by AirPlay Receiver** (ControlCenter). The default
 ### From npm
 
 ```bash
-openclaw plugins install @perkos/a2a
+openclaw plugins install @perkos/perkos-a2a
 ```
 
 ### Manual Installation

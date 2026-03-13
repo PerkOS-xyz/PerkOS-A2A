@@ -310,15 +310,26 @@ export class A2AServer {
   }
 
   start(): void {
+    this.tryListen(this.config.port);
+  }
+
+  private tryListen(port: number, attempt = 1): void {
+    const maxAttempts = 3;
     try {
-      const srv = this.app.listen(this.config.port, "0.0.0.0", () => {
+      const srv = this.app.listen(port, "0.0.0.0", () => {
         this.logger.info(
-          `[a2a] ${this.config.agentName} server on port ${this.config.port}`
+          `[a2a] ${this.config.agentName} server on port ${port}`
         );
+        // Update agent card URL to reflect actual port
+        this.agentCard.url = `http://localhost:${port}/a2a/jsonrpc`;
       });
       srv.on("error", (err: NodeJS.ErrnoException) => {
-        if (err.code === "EADDRINUSE") {
-          this.logger.error(`[a2a] Port ${this.config.port} in use, skipping`);
+        if (err.code === "EADDRINUSE" && attempt < maxAttempts) {
+          const nextPort = port + 1;
+          this.logger.info(`[a2a] Port ${port} in use, trying ${nextPort}`);
+          this.tryListen(nextPort, attempt + 1);
+        } else if (err.code === "EADDRINUSE") {
+          this.logger.error(`[a2a] Ports ${this.config.port}-${port} all in use, giving up`);
         } else {
           this.logger.error(`[a2a] Server error: ${err.message}`);
         }

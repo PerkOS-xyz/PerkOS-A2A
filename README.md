@@ -446,6 +446,10 @@ openclaw a2a send <agent> <message>  # Send a task to a peer
 openclaw gateway call a2a.status  # Get A2A status via RPC
 ```
 
+## ⚠️ macOS Note
+
+On macOS, **port 5000 is used by AirPlay Receiver** (ControlCenter). The default port is `5050` to avoid conflicts. If the configured port is in use, the plugin automatically tries the next port (up to 3 attempts). Docker/Linux agents can still use port 5000 via explicit config.
+
 ## Installation
 
 ### From npm
@@ -477,8 +481,8 @@ Add to your `openclaw.json`:
         config: {
           // This agent's name in the network
           agentName: "mimir",
-          // Port for the A2A HTTP server
-          port: 5000,
+          // Port for the A2A HTTP server (default 5050; use 5000 on Linux/Docker)
+          port: 5050,
           // Skills this agent exposes
           skills: [
             {
@@ -506,7 +510,7 @@ Add to your `openclaw.json`:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `agentName` | string | `"agent"` | This agent's name in the network |
-| `port` | number | `5000` | Port for the A2A HTTP server |
+| `port` | number | `5050` | Port for the A2A HTTP server (macOS avoids 5000/AirPlay) |
 | `skills` | array | `[]` | Skills to advertise in the Agent Card |
 | `peers` | object | `{}` | Map of peer agent names to A2A URLs |
 
@@ -593,10 +597,10 @@ import { A2AServer } from "@perkos/a2a";
 
 const server = new A2AServer({
   agentName: "my-agent",
-  port: 5000,
+  port: 5050,
   skills: [{ id: "chat", name: "Chat", description: "General chat", tags: [] }],
   peers: {
-    other: "http://other-agent:5000",
+    other: "http://other-agent:5050",
   },
 });
 

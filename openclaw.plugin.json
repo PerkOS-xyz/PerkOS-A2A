@@ -1,7 +1,7 @@
 {
   "id": "perkos-a2a",
   "name": "PerkOS A2A",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
   "author": "PerkOS",
   "configSchema": {
@@ -14,8 +14,8 @@
       },
       "port": {
         "type": "number",
-        "default": 5000,
-        "description": "Port for the A2A HTTP server"
+        "default": 5050,
+        "description": "Port for the A2A HTTP server (5050 default; macOS uses 5000 for AirPlay)"
       },
       "skills": {
         "type": "array",

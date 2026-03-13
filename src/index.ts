@@ -15,7 +15,7 @@ export * from "./types.js";
 export default function register(api: any) {
   const pluginConfig: A2APluginConfig = api.config?.plugins?.entries?.["perkos-a2a"]?.config || {
     agentName: "agent",
-    port: 5000,
+    port: 5050,
     skills: [],
     peers: {},
   };

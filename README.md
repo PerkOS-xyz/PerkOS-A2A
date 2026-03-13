@@ -36,6 +36,89 @@ Add to your `openclaw.json`:
 }
 ```
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Agent A (VPS)"
+        OC_A[OpenClaw Gateway] --> P_A[perkos-a2a plugin]
+        P_A --> S_A[A2A Server :5050]
+        P_A --> C_A[A2A Client]
+        S_A --> AC_A["/.well-known/agent-card.json"]
+        S_A --> RPC_A["/a2a/jsonrpc"]
+    end
+
+    subgraph "Agent B (VPS)"
+        OC_B[OpenClaw Gateway] --> P_B[perkos-a2a plugin]
+        P_B --> S_B[A2A Server :5050]
+        P_B --> C_B[A2A Client]
+    end
+
+    subgraph "Agent C (Behind NAT)"
+        OC_C[OpenClaw Gateway] --> P_C[perkos-a2a plugin]
+        P_C --> C_C["A2A Client (client-only)"]
+    end
+
+    C_A <-->|JSON-RPC 2.0| S_B
+    C_B <-->|JSON-RPC 2.0| S_A
+    C_C -->|JSON-RPC 2.0| S_A
+    C_C -->|JSON-RPC 2.0| S_B
+
+    style OC_A fill:#1d1029,stroke:#eb1b69,color:#fff
+    style OC_B fill:#1d1029,stroke:#eb1b69,color:#fff
+    style OC_C fill:#1d1029,stroke:#eb1b69,color:#fff
+    style P_A fill:#8e2051,stroke:#eb1b69,color:#fff
+    style P_B fill:#8e2051,stroke:#eb1b69,color:#fff
+    style P_C fill:#8e2051,stroke:#eb1b69,color:#fff
+    style S_A fill:#76437b,stroke:#eb1b69,color:#fff
+    style S_B fill:#76437b,stroke:#eb1b69,color:#fff
+    style C_A fill:#45193c,stroke:#eb1b69,color:#fff
+    style C_B fill:#45193c,stroke:#eb1b69,color:#fff
+    style C_C fill:#45193c,stroke:#eb1b69,color:#fff
+```
+
+## Task Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Agent A
+    participant A2A Server B
+    participant OpenClaw B
+    participant Agent B
+
+    Agent A->>A2A Server B: POST /a2a/jsonrpc<br/>{"method": "message/send"}
+    A2A Server B->>A2A Server B: Create Task (status: submitted)
+    A2A Server B-->>Agent A: Task ID + status: submitted
+
+    A2A Server B->>OpenClaw B: Forward task to agent session
+    OpenClaw B->>Agent B: Deliver message
+    A2A Server B->>A2A Server B: Update status: working
+
+    Agent B->>OpenClaw B: Generate response
+    OpenClaw B->>A2A Server B: Return result
+    A2A Server B->>A2A Server B: Update status: completed
+
+    Agent A->>A2A Server B: POST /a2a/jsonrpc<br/>{"method": "tasks/get"}
+    A2A Server B-->>Agent A: Task result + artifacts
+```
+
+## Agent Discovery
+
+```mermaid
+sequenceDiagram
+    participant CLI as perkos-a2a discover
+    participant Plugin as A2A Plugin
+    participant Peer1 as Peer Agent 1
+    participant Peer2 as Peer Agent 2
+
+    CLI->>Plugin: Trigger discovery
+    Plugin->>Peer1: GET /.well-known/agent-card.json
+    Peer1-->>Plugin: Agent Card (name, skills, endpoints)
+    Plugin->>Peer2: GET /.well-known/agent-card.json
+    Peer2-->>Plugin: Agent Card (name, skills, endpoints)
+    Plugin-->>CLI: Peer registry updated<br/>2 agents discovered
+```
+
 ## Networking Guide
 
 ### VPS / Public IP

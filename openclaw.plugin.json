@@ -1,5 +1,5 @@
 {
-  "id": "perkos-a2a",
+  "id": "a2a",
   "name": "PerkOS A2A",
   "version": "0.2.1",
   "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
@@ -59,7 +59,7 @@
       "label": "A2A Server Port"
     },
     "peers": {
-      "label": "Peer Agents (name → URL)"
+      "label": "Peer Agents (name \u2192 URL)"
     }
   }
 }

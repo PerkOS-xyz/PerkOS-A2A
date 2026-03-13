@@ -13,7 +13,7 @@ export { A2AServer } from "./server.js";
 export * from "./types.js";
 
 export default function register(api: any) {
-  const pluginConfig: A2APluginConfig = api.config?.plugins?.entries?.["perkos-a2a"]?.config || {
+  const pluginConfig: A2APluginConfig = api.config?.plugins?.entries?.["a2a"]?.config || {
     agentName: "agent",
     port: 5050,
     skills: [],
@@ -25,7 +25,7 @@ export default function register(api: any) {
 
   // Start A2A server as background service
   api.registerService({
-    id: "perkos-a2a",
+    id: "a2a",
     start: () => {
       server.start();
       logger.info(`[perkos-a2a] A2A server started for ${pluginConfig.agentName}`);

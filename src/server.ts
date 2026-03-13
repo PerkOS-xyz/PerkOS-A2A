@@ -5,6 +5,7 @@
 
 import express from "express";
 import { randomUUID } from "crypto";
+import { homedir } from "os";
 import type {
   AgentCard,
   Task,
@@ -167,7 +168,8 @@ export class A2AServer {
     // Write task to workspace for OpenClaw agent to process
     try {
       const fs = await import("fs");
-      const taskDir = "/root/.openclaw/workspace/memory";
+      const taskDir = (this.config as any).workspacePath
+        || `${process.env.HOME || homedir()}/.openclaw/workspace/memory`;
       if (!fs.existsSync(taskDir)) {
         fs.mkdirSync(taskDir, { recursive: true });
       }
@@ -308,11 +310,23 @@ export class A2AServer {
   }
 
   start(): void {
-    this.app.listen(this.config.port, "0.0.0.0", () => {
-      this.logger.info(
-        `[a2a] ${this.config.agentName} server on port ${this.config.port}`
-      );
-    });
+    try {
+      const srv = this.app.listen(this.config.port, "0.0.0.0", () => {
+        this.logger.info(
+          `[a2a] ${this.config.agentName} server on port ${this.config.port}`
+        );
+      });
+      srv.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          this.logger.error(`[a2a] Port ${this.config.port} in use, skipping`);
+        } else {
+          this.logger.error(`[a2a] Server error: ${err.message}`);
+        }
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[a2a] Failed to start server: ${msg}`);
+    }
   }
 
   getExpressApp(): express.Express {

@@ -1,7 +1,7 @@
 {
   "id": "a2a",
   "name": "PerkOS A2A",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
   "author": "PerkOS",
   "configSchema": {

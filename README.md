@@ -188,7 +188,7 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
   "mode": "auto",
   "skills": [],
   "peers": {
-    "other-agent": "http://10.0.0.2:5050"
+    "agent-on-vps": "http://10.0.0.2:5050"
   },
   "relay": {
     "url": "wss://relay.perkos.xyz",
@@ -202,13 +202,31 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
 }
 ```
 
+### Peer Routing
+
+The plugin resolves targets in this order:
+
+1. **Direct HTTP** — if the target has a URL in `peers`, try HTTP first
+2. **Relay fallback** — if HTTP fails or no URL is configured, route via relay
+
+**Important:** Only add agents to `peers` if they have an HTTP endpoint you can reach directly. For agents behind NAT that are only reachable via relay, **do not add them to `peers`** — the plugin will automatically route to them through the relay.
+
+```json
+"peers": {
+  "agent-on-vps": "http://10.0.0.2:5050",
+  "another-vps-agent": "http://10.0.0.3:5050"
+}
+```
+
+In this example, agents behind NAT (not listed) are reached via relay automatically.
+
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `agentName` | string | `"agent"` | This agent's name in the council |
 | `port` | number | `5050` | HTTP server port |
 | `mode` | string | `"auto"` | Operating mode (see table above) |
 | `skills` | array | `[]` | Skills exposed via A2A |
-| `peers` | object | `{}` | Direct peer URLs |
+| `peers` | object | `{}` | Direct peer URLs (HTTP-reachable agents only) |
 | `relay.url` | string | - | Relay hub WebSocket URL |
 | `relay.apiKey` | string | - | API key for relay authentication |
 | `relay.enabled` | boolean | `false` | Enable relay connectivity |
@@ -230,7 +248,9 @@ When `auth.requireApiKey` is enabled, inbound HTTP requests must include an API 
 
 ## Session Injection
 
-When a task is received, the plugin attempts to inject it directly into the agent's OpenClaw session using the plugin API (`api.injectMessage`). If session injection is not available, tasks fall back to writing markdown files to the workspace.
+When a task arrives via relay, the plugin queues it and injects it into the agent's session using the `before_agent_start` hook. The task content appears as prepended context on the agent's next turn, allowing the agent to see and respond to A2A messages naturally.
+
+This works automatically — no additional configuration needed.
 
 ## Agent Tools
 
@@ -281,6 +301,11 @@ Change the port in config, or run `lsof -i :5050` to find the conflicting proces
 - Verify the peer URL is correct and reachable
 - Check firewalls/security groups
 - If using relay, verify both agents are connected to the same relay hub
+
+**"relay" is not a valid URL:**
+- Do NOT set `"agent-name": "relay"` in peers — this is not valid
+- Agents reachable only via relay should be **omitted from peers entirely**
+- The plugin auto-routes to relay when no peer URL exists for a target
 
 **Auth errors (401):**
 - Ensure your API key is in the target agent's `auth.apiKeys` list

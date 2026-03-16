@@ -3,13 +3,15 @@
  *
  * Agent-to-Agent (A2A) protocol communication plugin.
  * Adds tools for agents to discover peers, send tasks, and check task status.
- * Runs an A2A-compliant HTTP server alongside the OpenClaw gateway.
+ * Supports direct HTTP, relay-based NAT traversal, and session injection.
  */
 
 import { A2AServer, detectNetworking } from "./server.js";
 import type { A2APluginConfig } from "./types.js";
 
 export { A2AServer, detectNetworking } from "./server.js";
+export { RelayHub } from "./relay.js";
+export { RelayClient } from "./relay-client.js";
 export * from "./types.js";
 
 export default function register(api: any) {
@@ -22,6 +24,21 @@ export default function register(api: any) {
 
   const logger = api.logger || console;
   const server = new A2AServer(pluginConfig, logger);
+
+  // Wire up session injection if the plugin API supports it
+  if (typeof api.injectMessage === "function") {
+    server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
+      api.injectMessage(text, metadata);
+    });
+    logger.info("[perkos-a2a] Session injection enabled");
+  } else if (typeof api.sendMessage === "function") {
+    server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
+      api.sendMessage({ text, metadata });
+    });
+    logger.info("[perkos-a2a] Session injection enabled (sendMessage)");
+  } else {
+    logger.info("[perkos-a2a] Session injection not available, tasks will be written to files");
+  }
 
   // Start A2A server as background service
   api.registerService({
@@ -164,9 +181,15 @@ export default function register(api: any) {
       }
 
       try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const peerAuth = (pluginConfig as any).peerAuth?.[params.target];
+        if (peerAuth) {
+          headers["x-api-key"] = peerAuth;
+        }
+
         const response = await fetch(`${targetUrl}/a2a/jsonrpc`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({
             jsonrpc: "2.0",
             method: "tasks/get",
@@ -218,9 +241,11 @@ export default function register(api: any) {
       port: pluginConfig.port,
       mode: pluginConfig.mode || "auto",
       clientOnly: server.isClientOnly(),
+      relayConnected: server.isRelayConnected(),
+      relayUrl: pluginConfig.relay?.url || null,
       peers: Object.keys(pluginConfig.peers),
       protocol: "a2a",
-      version: "0.4.0",
+      version: "0.5.0",
     });
   });
 
@@ -237,6 +262,9 @@ export default function register(api: any) {
           console.log(`Port: ${pluginConfig.port}`);
           console.log(`Mode: ${pluginConfig.mode || "auto"}`);
           console.log(`Client-only: ${server.isClientOnly()}`);
+          console.log(`Relay connected: ${server.isRelayConnected()}`);
+          console.log(`Relay URL: ${pluginConfig.relay?.url || "(not configured)"}`);
+          console.log(`Auth required: ${pluginConfig.auth?.requireApiKey || false}`);
           console.log(`Peers: ${Object.keys(pluginConfig.peers).join(", ") || "(none)"}`);
         });
 
@@ -298,19 +326,29 @@ export default function register(api: any) {
           }
           console.log(`Port ${pluginConfig.port}: ${portAvailable ? "available" : "IN USE"}`);
 
+          // Relay status
+          console.log(`\nRelay: ${pluginConfig.relay?.enabled ? "enabled" : "disabled"}`);
+          if (pluginConfig.relay?.url) {
+            console.log(`Relay URL: ${pluginConfig.relay.url}`);
+          }
+          console.log(`Auth: ${pluginConfig.auth?.requireApiKey ? "enabled" : "disabled"}`);
+
           console.log("\n--- Recommendations ---\n");
 
           if (!net.isBehindNat) {
-            console.log("You're good! Configure peers with your public IP.");
+            console.log("You have a public IP. Configure peers with your public IP.");
             console.log(`  Your A2A URL: http://${net.publicIp}:${pluginConfig.port}/a2a/jsonrpc`);
+          } else if (pluginConfig.relay?.enabled) {
+            console.log("You are behind NAT but relay is configured. Bidirectional communication via relay.");
           } else if (net.hasTailscale && net.tailscaleIp) {
             console.log("Use your Tailscale IP for peers.");
             console.log(`  Your A2A URL: http://${net.tailscaleIp}:${pluginConfig.port}/a2a/jsonrpc`);
           } else {
             console.log("You are behind NAT. Options:");
-            console.log("  1) Install Tailscale (recommended) - https://tailscale.com");
-            console.log("  2) Set up a Cloudflare Tunnel");
-            console.log('  3) Client-only mode (can send tasks but not receive) - set mode: "client-only"');
+            console.log("  1) Configure a relay hub (recommended) - set relay.url and relay.enabled in config");
+            console.log("  2) Install Tailscale - https://tailscale.com");
+            console.log("  3) Set up a Cloudflare Tunnel");
+            console.log('  4) Client-only mode (can send but not receive) - set mode: "client-only"');
           }
 
           if (!portAvailable) {

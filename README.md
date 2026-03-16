@@ -1,6 +1,6 @@
 # @perkos/perkos-a2a
 
-Agent-to-Agent (A2A) protocol plugin for [OpenClaw](https://openclaw.ai). Enables multi-agent communication using Google's A2A protocol specification.
+Agent-to-Agent (A2A) protocol plugin for [OpenClaw](https://openclaw.ai). Enables multi-agent communication using Google's A2A protocol specification with enterprise-grade relay infrastructure for NAT traversal.
 
 ## Quick Start
 
@@ -28,6 +28,15 @@ Add to your `openclaw.json`:
           "mode": "auto",
           "peers": {
             "other-agent": "http://10.0.0.2:5050"
+          },
+          "relay": {
+            "url": "wss://relay.perkos.xyz",
+            "apiKey": "your-agent-api-key",
+            "enabled": true
+          },
+          "auth": {
+            "requireApiKey": true,
+            "apiKeys": ["key1", "key2"]
           }
         }
       }
@@ -37,6 +46,58 @@ Add to your `openclaw.json`:
 ```
 
 ## Architecture
+
+### Relay Hub (NAT Traversal)
+
+Agents behind NAT connect outbound to the relay hub via WebSocket. The relay routes messages between agents, queues messages for offline agents, and maintains a presence registry.
+
+```mermaid
+graph TB
+    subgraph "A2A Relay Hub (Cloud VPS)"
+        RH[WebSocket Broker]
+        MQ[Message Queue]
+        REG[Agent Registry]
+        AUTH[API Key Auth]
+        RL[Rate Limiter]
+    end
+
+    subgraph "Agent A (Behind NAT)"
+        OC_A[OpenClaw Gateway] --> P_A[perkos-a2a plugin]
+        P_A --> RC_A[Relay Client]
+    end
+
+    subgraph "Agent B (VPS)"
+        OC_B[OpenClaw Gateway] --> P_B[perkos-a2a plugin]
+        P_B --> S_B[HTTP Server :5050]
+        P_B --> RC_B[Relay Client]
+    end
+
+    subgraph "Agent C (Behind NAT)"
+        OC_C[OpenClaw Gateway] --> P_C[perkos-a2a plugin]
+        P_C --> RC_C[Relay Client]
+    end
+
+    RC_A <-->|WSS| RH
+    RC_B <-->|WSS| RH
+    RC_C <-->|WSS| RH
+    RC_B <-->|Direct HTTP| S_B
+
+    style RH fill:#1d1029,stroke:#eb1b69,color:#fff
+    style MQ fill:#45193c,stroke:#eb1b69,color:#fff
+    style REG fill:#45193c,stroke:#eb1b69,color:#fff
+    style AUTH fill:#45193c,stroke:#eb1b69,color:#fff
+    style RL fill:#45193c,stroke:#eb1b69,color:#fff
+    style OC_A fill:#1d1029,stroke:#eb1b69,color:#fff
+    style OC_B fill:#1d1029,stroke:#eb1b69,color:#fff
+    style OC_C fill:#1d1029,stroke:#eb1b69,color:#fff
+    style P_A fill:#8e2051,stroke:#eb1b69,color:#fff
+    style P_B fill:#8e2051,stroke:#eb1b69,color:#fff
+    style P_C fill:#8e2051,stroke:#eb1b69,color:#fff
+```
+
+### Direct Peer-to-Peer
+
+Agents on the same network or with public IPs can communicate directly via HTTP without a relay.
 
 ```mermaid
 graph TB
@@ -54,27 +115,17 @@ graph TB
         P_B --> C_B[A2A Client]
     end
 
-    subgraph "Agent C (Behind NAT)"
-        OC_C[OpenClaw Gateway] --> P_C[perkos-a2a plugin]
-        P_C --> C_C["A2A Client (client-only)"]
-    end
-
     C_A <-->|JSON-RPC 2.0| S_B
     C_B <-->|JSON-RPC 2.0| S_A
-    C_C -->|JSON-RPC 2.0| S_A
-    C_C -->|JSON-RPC 2.0| S_B
 
     style OC_A fill:#1d1029,stroke:#eb1b69,color:#fff
     style OC_B fill:#1d1029,stroke:#eb1b69,color:#fff
-    style OC_C fill:#1d1029,stroke:#eb1b69,color:#fff
     style P_A fill:#8e2051,stroke:#eb1b69,color:#fff
     style P_B fill:#8e2051,stroke:#eb1b69,color:#fff
-    style P_C fill:#8e2051,stroke:#eb1b69,color:#fff
     style S_A fill:#76437b,stroke:#eb1b69,color:#fff
     style S_B fill:#76437b,stroke:#eb1b69,color:#fff
     style C_A fill:#45193c,stroke:#eb1b69,color:#fff
     style C_B fill:#45193c,stroke:#eb1b69,color:#fff
-    style C_C fill:#45193c,stroke:#eb1b69,color:#fff
 ```
 
 ## Task Lifecycle
@@ -82,123 +133,158 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Agent A
-    participant A2A Server B
-    participant OpenClaw B
+    participant Relay Hub
     participant Agent B
 
-    Agent A->>A2A Server B: POST /a2a/jsonrpc<br/>{"method": "message/send"}
-    A2A Server B->>A2A Server B: Create Task (status: submitted)
-    A2A Server B-->>Agent A: Task ID + status: submitted
+    Note over Agent A,Agent B: Via Relay (NAT traversal)
+    Agent A->>Relay Hub: WSS: task message (to: Agent B)
+    Relay Hub->>Agent B: WSS: forward task
+    Agent B->>Agent B: Process task + inject into session
+    Agent B->>Relay Hub: WSS: task response
+    Relay Hub->>Agent A: WSS: forward response
 
-    A2A Server B->>OpenClaw B: Forward task to agent session
-    OpenClaw B->>Agent B: Deliver message
-    A2A Server B->>A2A Server B: Update status: working
-
-    Agent B->>OpenClaw B: Generate response
-    OpenClaw B->>A2A Server B: Return result
-    A2A Server B->>A2A Server B: Update status: completed
-
-    Agent A->>A2A Server B: POST /a2a/jsonrpc<br/>{"method": "tasks/get"}
-    A2A Server B-->>Agent A: Task result + artifacts
+    Note over Agent A,Agent B: Via Direct HTTP
+    Agent A->>Agent B: POST /a2a/jsonrpc (message/send)
+    Agent B->>Agent B: Process task + inject into session
+    Agent B-->>Agent A: JSON-RPC response
 ```
 
-## Agent Discovery
+## Running the Relay Hub
 
-```mermaid
-sequenceDiagram
-    participant CLI as perkos-a2a discover
-    participant Plugin as A2A Plugin
-    participant Peer1 as Peer Agent 1
-    participant Peer2 as Peer Agent 2
-
-    CLI->>Plugin: Trigger discovery
-    Plugin->>Peer1: GET /.well-known/agent-card.json
-    Peer1-->>Plugin: Agent Card (name, skills, endpoints)
-    Plugin->>Peer2: GET /.well-known/agent-card.json
-    Peer2-->>Plugin: Agent Card (name, skills, endpoints)
-    Plugin-->>CLI: Peer registry updated<br/>2 agents discovered
-```
-
-## Networking Guide
-
-### VPS / Public IP
-
-If your agent runs on a VPS with a public IP, you're ready to go. Configure peers with your public IP:
-
-```json
-"peers": {
-  "agent-b": "http://203.0.113.10:5050"
-}
-```
-
-### Behind NAT (macOS / Laptop)
-
-Most development machines are behind NAT. The plugin auto-detects this and offers options:
-
-**Tailscale (recommended):**
-1. Install Tailscale: https://tailscale.com
-2. Both agents join the same tailnet
-3. Use Tailscale IPs for peers:
-   ```json
-   "peers": { "agent-b": "http://100.64.0.2:5050" }
-   ```
-
-**Cloudflare Tunnel:**
-1. Set up `cloudflared` to expose port 5050
-2. Use the tunnel URL for peers
-
-**Client-only mode:**
-If you only need to send tasks (not receive), set `"mode": "client-only"`. No server is started.
-
-## CLI Commands
+The relay hub is a lightweight WebSocket broker. Deploy it on any VPS with a public IP.
 
 ```bash
-openclaw perkos-a2a setup      # Detect environment and show recommendations
-openclaw perkos-a2a status     # Show agent status and config
-openclaw perkos-a2a discover   # Discover peer agents
-openclaw perkos-a2a send <target> <message>  # Send a task to a peer
+# Via npx (development)
+npx tsx bin/relay.ts --port 6060 --api-keys key1,key2
+
+# Via environment variables
+RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
 ```
+
+### Relay Hub Options
+
+| Option | Env Var | Default | Description |
+|---|---|---|---|
+| `--port` | `RELAY_PORT` | 6060 | WebSocket listen port |
+| `--api-keys` | `RELAY_API_KEYS` | (none) | Comma-separated accepted API keys |
+| `--max-queue` | `RELAY_MAX_QUEUE` | 200 | Max queued messages per offline agent |
+| `--rate-limit` | `RELAY_RATE_LIMIT` | 60 | Max messages per agent per minute |
+
+## Modes
+
+| Mode | HTTP Server | Relay Client | Use Case |
+|---|---|---|---|
+| `auto` | Conditional | If configured | Detects NAT, chooses best option |
+| `full` | Yes | If configured | VPS with public IP |
+| `client-only` | No | If configured | Behind NAT, no local server |
+| `relay` | No | No | Run as relay hub only |
 
 ## Configuration
 
-| Option      | Type     | Default  | Description                                    |
-|-------------|----------|----------|------------------------------------------------|
-| `agentName` | string   | "agent"  | This agent's name in the council               |
-| `port`      | number   | 5050     | HTTP server port (avoid 5000 on macOS/AirPlay) |
-| `mode`      | string   | "auto"   | `full`, `client-only`, or `auto` (detect)      |
-| `skills`    | array    | []       | Skills this agent exposes via A2A              |
-| `peers`     | object   | {}       | Map of peer names to A2A base URLs             |
+```json
+{
+  "agentName": "my-agent",
+  "port": 5050,
+  "mode": "auto",
+  "skills": [],
+  "peers": {
+    "other-agent": "http://10.0.0.2:5050"
+  },
+  "relay": {
+    "url": "wss://relay.perkos.xyz",
+    "apiKey": "agent-specific-key",
+    "enabled": true
+  },
+  "auth": {
+    "requireApiKey": true,
+    "apiKeys": ["key1", "key2"]
+  }
+}
+```
 
-### Mode Details
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `agentName` | string | `"agent"` | This agent's name in the council |
+| `port` | number | `5050` | HTTP server port |
+| `mode` | string | `"auto"` | Operating mode (see table above) |
+| `skills` | array | `[]` | Skills exposed via A2A |
+| `peers` | object | `{}` | Direct peer URLs |
+| `relay.url` | string | - | Relay hub WebSocket URL |
+| `relay.apiKey` | string | - | API key for relay authentication |
+| `relay.enabled` | boolean | `false` | Enable relay connectivity |
+| `auth.requireApiKey` | boolean | `false` | Require API key for inbound HTTP |
+| `auth.apiKeys` | string[] | `[]` | Accepted API keys for inbound HTTP |
 
-- **auto** (default): Detects NAT/Tailscale. Falls back to client-only if behind NAT with no tunnel. Also falls back if port is unavailable.
-- **full**: Always starts the HTTP server. Fails loudly if port is in use.
-- **client-only**: No HTTP server. Can send tasks and discover peers but cannot receive inbound tasks.
+## Authentication
+
+### Relay Auth
+
+Agents authenticate with the relay hub using an API key provided during WebSocket registration. The relay rejects connections with invalid keys.
+
+### HTTP Auth
+
+When `auth.requireApiKey` is enabled, inbound HTTP requests must include an API key via:
+- `X-API-Key` header
+- `Authorization: Bearer <key>` header
+- `?apiKey=<key>` query parameter
+
+## Session Injection
+
+When a task is received, the plugin attempts to inject it directly into the agent's OpenClaw session using the plugin API (`api.injectMessage`). If session injection is not available, tasks fall back to writing markdown files to the workspace.
 
 ## Agent Tools
 
 When the plugin is active, three tools are available to the agent:
 
-- `a2a_discover` -- Discover all configured peer agents and their capabilities
-- `a2a_send_task` -- Send a task to a named peer agent
+- `a2a_discover` -- Discover all configured peer agents and their capabilities (direct + relay)
+- `a2a_send_task` -- Send a task to a named peer agent (tries direct HTTP, falls back to relay)
 - `a2a_task_status` -- Check the status of a previously sent task
 
+## CLI Commands
+
+```bash
+openclaw perkos-a2a setup      # Detect environment and show recommendations
+openclaw perkos-a2a status     # Show agent status, relay connection, and config
+openclaw perkos-a2a discover   # Discover peer agents (direct + relay)
+openclaw perkos-a2a send <target> <message>  # Send a task to a peer
+```
+
+## Networking Guide
+
+### Option 1: Relay Hub (Recommended for NAT)
+
+Deploy the relay hub on a VPS, configure all agents to connect to it. No port forwarding or tunnels needed.
+
+### Option 2: Direct (Public IP / Same Network)
+
+Agents with public IPs or on the same network can communicate directly via HTTP. Configure peer URLs in the `peers` config.
+
+### Option 3: Tailscale
+
+Both agents join the same tailnet. Use Tailscale IPs for peer URLs.
+
+### Option 4: Client-Only
+
+Set `"mode": "client-only"` to only send tasks (not receive). Combine with relay for full bidirectional support.
+
 ## Troubleshooting
+
+**Relay connection failing:**
+- Verify the relay URL is correct and reachable
+- Check that your API key matches one configured on the relay hub
+- Look for `[perkos-a2a]` log messages for connection errors
 
 **Port 5050 in use:**
 Change the port in config, or run `lsof -i :5050` to find the conflicting process.
 
-**Port 5000 on macOS:**
-macOS Monterey+ uses port 5000 for AirPlay Receiver. Use 5050 (the default) instead.
-
 **Peers show offline:**
 - Verify the peer URL is correct and reachable
 - Check firewalls/security groups
-- If behind NAT, ensure both agents are on the same tailnet or have tunnel access
+- If using relay, verify both agents are connected to the same relay hub
 
-**Auto mode starts client-only unexpectedly:**
-- Run `openclaw perkos-a2a setup` to diagnose
-- Force `"mode": "full"` if you know the port is accessible
+**Auth errors (401):**
+- Ensure your API key is in the target agent's `auth.apiKeys` list
+- Check `X-API-Key` header is being sent correctly
 
 ## License
 

@@ -25,20 +25,37 @@ export default function register(api: any) {
   const logger = api.logger || console;
   const server = new A2AServer(pluginConfig, logger);
 
-  // Wire up session injection if the plugin API supports it
-  if (typeof api.injectMessage === "function") {
-    server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
-      api.injectMessage(text, metadata);
-    });
-    logger.info("[perkos-a2a] Session injection enabled");
-  } else if (typeof api.sendMessage === "function") {
-    server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
-      api.sendMessage({ text, metadata });
-    });
-    logger.info("[perkos-a2a] Session injection enabled (sendMessage)");
-  } else {
-    logger.info("[perkos-a2a] Session injection not available, tasks will be written to files");
-  }
+  // Pending tasks queue for hook-based injection
+  const pendingTasks: Array<{ from: string; text: string; taskId: string; time: string }> = [];
+
+  // Wire up session injection: queue tasks for before_agent_start hook
+  server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
+    const from = (metadata?.fromAgent as string) || "unknown";
+    const taskId = (metadata?.taskId as string) || "unknown";
+    pendingTasks.push({ from, text, taskId, time: new Date().toISOString() });
+    logger.info(`[perkos-a2a] Task queued from ${from} (${taskId}), ${pendingTasks.length} pending`);
+  });
+  logger.info("[perkos-a2a] Session injection via before_agent_start hook");
+
+  // Hook: inject pending A2A tasks as context before each agent turn
+  api.registerHook("before_agent_start", async () => {
+    if (pendingTasks.length === 0) return {};
+
+    const tasks = pendingTasks.splice(0, pendingTasks.length);
+    const lines = [
+      `[A2A] ${tasks.length} incoming task(s) received via relay:`,
+      "",
+    ];
+    for (const t of tasks) {
+      lines.push(`--- From: ${t.from} | Task: ${t.taskId} | ${t.time} ---`);
+      lines.push(t.text);
+      lines.push("");
+    }
+    lines.push("Respond to these A2A tasks as appropriate.");
+
+    logger.info(`[perkos-a2a] Injecting ${tasks.length} task(s) into agent context`);
+    return { prependContext: lines.join("\n") };
+  });
 
   // Start A2A server as background service
   api.registerService({
@@ -244,8 +261,9 @@ export default function register(api: any) {
       relayConnected: server.isRelayConnected(),
       relayUrl: pluginConfig.relay?.url || null,
       peers: Object.keys(pluginConfig.peers),
+      pendingTasks: pendingTasks.length,
       protocol: "a2a",
-      version: "0.5.1",
+      version: "0.5.2",
     });
   });
 

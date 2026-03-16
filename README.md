@@ -236,9 +236,9 @@ When a task is received, the plugin attempts to inject it directly into the agen
 
 When the plugin is active, three tools are available to the agent:
 
-- `a2a_discover` -- Discover all configured peer agents and their capabilities (direct + relay)
-- `a2a_send_task` -- Send a task to a named peer agent (tries direct HTTP, falls back to relay)
-- `a2a_task_status` -- Check the status of a previously sent task
+- `perkos_a2a_discover` -- Discover all configured peer agents and their capabilities (direct + relay)
+- `perkos_a2a_send` -- Send a task to a named peer agent (tries direct HTTP, falls back to relay)
+- `perkos_a2a_status` -- Check the status of a previously sent task
 
 ## CLI Commands
 

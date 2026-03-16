@@ -1,6 +1,6 @@
 {
   "name": "@perkos/perkos-a2a",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A2A Protocol communication plugin for OpenClaw \u2014 Agent-to-Agent protocol implementation",
   "type": "module",
   "main": "dist/index.js",

@@ -54,7 +54,7 @@ export default function register(api: any) {
 
   // Tool: Send a task to a peer agent
   api.registerTool({
-    name: "a2a_send_task",
+    name: "perkos_a2a_send",
     description:
       "Send a task to another agent in the council via A2A protocol. " +
       "Use this to delegate work to a peer agent.",
@@ -110,7 +110,7 @@ export default function register(api: any) {
 
   // Tool: Discover peer agents
   api.registerTool({
-    name: "a2a_discover",
+    name: "perkos_a2a_discover",
     description:
       "Discover all peer agents in the council and their capabilities. " +
       "Returns each agent's status, name, description, and skills.",
@@ -151,7 +151,7 @@ export default function register(api: any) {
 
   // Tool: Get task status
   api.registerTool({
-    name: "a2a_task_status",
+    name: "perkos_a2a_status",
     description: "Get the status of a previously sent A2A task by its ID.",
     parameters: {
       type: "object",
@@ -162,7 +162,7 @@ export default function register(api: any) {
         },
         taskId: {
           type: "string",
-          description: "The task ID returned from a2a_send_task",
+          description: "The task ID returned from perkos_a2a_send",
         },
       },
       required: ["target", "taskId"],
@@ -235,7 +235,7 @@ export default function register(api: any) {
   });
 
   // Gateway RPC method
-  api.registerGatewayMethod("a2a.status", ({ respond }: any) => {
+  api.registerGatewayMethod("perkos-a2a.status", ({ respond }: any) => {
     respond(true, {
       agent: pluginConfig.agentName,
       port: pluginConfig.port,
@@ -245,7 +245,7 @@ export default function register(api: any) {
       relayUrl: pluginConfig.relay?.url || null,
       peers: Object.keys(pluginConfig.peers),
       protocol: "a2a",
-      version: "0.5.0",
+      version: "0.5.1",
     });
   });
 

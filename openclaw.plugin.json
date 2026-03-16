@@ -1,7 +1,7 @@
 {
   "id": "perkos-a2a",
   "name": "PerkOS A2A",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
   "author": "PerkOS",
   "configSchema": {
@@ -19,9 +19,9 @@
       },
       "mode": {
         "type": "string",
-        "enum": ["full", "client-only", "auto"],
+        "enum": ["full", "client-only", "relay", "auto"],
         "default": "auto",
-        "description": "Server mode: full (listen + send), client-only (send only), auto (detect)"
+        "description": "Server mode: full (listen + send), client-only (send only), relay (run as hub), auto (detect)"
       },
       "skills": {
         "type": "array",
@@ -40,6 +40,53 @@
         "type": "object",
         "additionalProperties": { "type": "string" },
         "description": "Map of peer agent names to their A2A URLs"
+      },
+      "relay": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable relay hub connection for NAT traversal"
+          },
+          "url": {
+            "type": "string",
+            "description": "WebSocket URL of the relay hub (e.g. wss://relay.perkos.xyz)"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "API key for authenticating with the relay hub"
+          },
+          "hubPort": {
+            "type": "number",
+            "default": 8787,
+            "description": "Port when running as relay hub (mode: relay)"
+          },
+          "hubApiKeys": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Valid API keys when running as relay hub"
+          }
+        },
+        "description": "Relay hub configuration for NAT traversal"
+      },
+      "auth": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requireApiKey": {
+            "type": "boolean",
+            "default": false,
+            "description": "Require API key for incoming HTTP A2A requests"
+          },
+          "apiKeys": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Valid API keys for incoming requests"
+          }
+        },
+        "description": "Authentication configuration for A2A endpoints"
       }
     }
   },
@@ -47,6 +94,8 @@
     "agentName": { "label": "Agent Name", "placeholder": "mimir" },
     "port": { "label": "A2A Server Port" },
     "mode": { "label": "Server Mode" },
-    "peers": { "label": "Peer Agents (name -> URL)" }
+    "peers": { "label": "Peer Agents (name -> URL)" },
+    "relay": { "label": "Relay Hub (NAT Traversal)" },
+    "auth": { "label": "Authentication" }
   }
 }

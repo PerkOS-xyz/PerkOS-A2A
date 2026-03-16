@@ -75,10 +75,61 @@ export interface PeerConfig {
   [agentName: string]: string;
 }
 
+export interface RelayConfig {
+  /** WebSocket URL of the relay hub (e.g. wss://relay.perkos.xyz) */
+  url: string;
+  /** API key for authenticating with the relay hub */
+  apiKey: string;
+  /** Whether relay connectivity is enabled */
+  enabled: boolean;
+}
+
+export interface AuthConfig {
+  /** Require API key for inbound HTTP requests */
+  requireApiKey: boolean;
+  /** Accepted API keys for inbound HTTP requests */
+  apiKeys: string[];
+}
+
 export interface A2APluginConfig {
   agentName: string;
   port: number;
   skills: AgentSkill[];
   peers: PeerConfig;
-  mode?: "full" | "client-only" | "auto";
+  mode?: "full" | "client-only" | "relay" | "auto";
+  relay?: RelayConfig;
+  auth?: AuthConfig;
+}
+
+/** Wire protocol for relay WebSocket messages */
+export type RelayMessageType =
+  | "register"
+  | "register_ack"
+  | "task"
+  | "task_response"
+  | "discover"
+  | "discover_response"
+  | "heartbeat"
+  | "heartbeat_ack"
+  | "error";
+
+export interface RelayMessage {
+  type: RelayMessageType;
+  /** Sender agent name */
+  from?: string;
+  /** Target agent name (for routed messages) */
+  to?: string;
+  /** Unique message identifier */
+  id: string;
+  /** Message payload */
+  payload: Record<string, unknown>;
+  /** ISO timestamp */
+  timestamp: string;
+}
+
+export interface RelayAgentEntry {
+  name: string;
+  connectedAt: string;
+  lastHeartbeat: string;
+  card?: AgentCard;
 }

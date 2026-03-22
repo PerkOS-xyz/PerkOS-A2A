@@ -28,14 +28,38 @@ export default function register(api: any) {
   // Pending tasks queue for hook-based injection
   const pendingTasks: Array<{ from: string; text: string; taskId: string; time: string }> = [];
 
+  // Gateway context reference for wake functionality
+  let gatewayContext: any = null;
+
+  // Wake the agent when a task arrives so it processes immediately
+  const wakeAgent = (from: string, taskId: string) => {
+    if (gatewayContext?.cron?.wake) {
+      try {
+        gatewayContext.cron.wake({
+          mode: "now",
+          text: `[A2A] Incoming task from ${from} (${taskId}). Check pending A2A tasks.`,
+        });
+        logger.info(`[perkos-a2a] Woke agent for task ${taskId} from ${from}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[perkos-a2a] Failed to wake agent: ${msg}`);
+      }
+    } else {
+      logger.info(`[perkos-a2a] No gateway context available, task ${taskId} will wait for next turn`);
+    }
+  };
+
   // Wire up session injection: queue tasks for before_agent_start hook
   server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
     const from = (metadata?.fromAgent as string) || "unknown";
     const taskId = (metadata?.taskId as string) || "unknown";
     pendingTasks.push({ from, text, taskId, time: new Date().toISOString() });
     logger.info(`[perkos-a2a] Task queued from ${from} (${taskId}), ${pendingTasks.length} pending`);
+
+    // Wake the agent immediately so it processes the task
+    wakeAgent(from, taskId);
   });
-  logger.info("[perkos-a2a] Session injection via before_agent_start hook");
+  logger.info("[perkos-a2a] Session injection via before_agent_start hook + wake on receive");
 
   // Hook: inject pending A2A tasks as context before each agent turn
   api.registerHook("before_agent_start", async () => {
@@ -251,8 +275,23 @@ export default function register(api: any) {
     },
   });
 
+  // Capture gateway context at startup for wake-on-receive
+  if (api.on) {
+    api.on("gateway_start", (_event: any, ctx: any) => {
+      if (ctx) {
+        gatewayContext = ctx;
+        logger.info("[perkos-a2a] Gateway context captured via gateway_start hook");
+      }
+    });
+  }
+
   // Gateway RPC method
-  api.registerGatewayMethod("perkos-a2a.status", ({ respond }: any) => {
+  api.registerGatewayMethod("perkos-a2a.status", ({ respond, context }: any) => {
+    // Fallback: capture context from first RPC call if hook didn't fire
+    if (!gatewayContext && context) {
+      gatewayContext = context;
+      logger.info("[perkos-a2a] Gateway context captured via RPC fallback");
+    }
     respond(true, {
       agent: pluginConfig.agentName,
       port: pluginConfig.port,
@@ -263,7 +302,7 @@ export default function register(api: any) {
       peers: Object.keys(pluginConfig.peers),
       pendingTasks: pendingTasks.length,
       protocol: "a2a",
-      version: "0.6.0",
+      version: "0.7.0",
     });
   });
 

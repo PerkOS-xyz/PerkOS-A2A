@@ -149,7 +149,7 @@ export class A2AServer {
         ok: true,
         agent: this.config.agentName,
         protocol: "a2a",
-        version: "0.6.0",
+        version: "0.7.0",
         peers: Object.keys(this.config.peers),
         taskCount: this.tasks.size,
         relayConnected: this.isRelayConnected(),

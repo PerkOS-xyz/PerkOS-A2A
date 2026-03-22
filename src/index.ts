@@ -4,15 +4,81 @@
  * Agent-to-Agent (A2A) protocol communication plugin.
  * Adds tools for agents to discover peers, send tasks, and check task status.
  * Supports direct HTTP, relay-based NAT traversal, and session injection.
+ *
+ * v0.8.0: Uses enqueueSystemEvent + WebSocket wake for immediate task processing.
  */
 
 import { A2AServer, detectNetworking } from "./server.js";
 import type { A2APluginConfig } from "./types.js";
+import WebSocket from "ws";
 
 export { A2AServer, detectNetworking } from "./server.js";
 export { RelayHub } from "./relay.js";
 export { RelayClient } from "./relay-client.js";
 export * from "./types.js";
+
+/**
+ * Wake the gateway agent by sending a "wake" RPC via WebSocket.
+ * This triggers an immediate heartbeat which processes queued system events.
+ */
+function wakeGatewayAgent(
+  text: string,
+  logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+): void {
+  const port = process.env.OPENCLAW_GATEWAY_PORT || "18789";
+  const token = process.env.OPENCLAW_GATEWAY_TOKEN || "";
+  const wsUrl = `ws://127.0.0.1:${port}`;
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    let settled = false;
+
+    const cleanup = () => {
+      if (!settled) {
+        settled = true;
+        try { ws.close(); } catch {}
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      logger.error("[perkos-a2a] Wake WebSocket timeout (5s)");
+      cleanup();
+    }, 5000);
+
+    ws.on("open", () => {
+      // Send auth
+      if (token) {
+        ws.send(JSON.stringify({ type: "auth", token }));
+      }
+      // Send wake request
+      ws.send(JSON.stringify({
+        type: "request",
+        method: "wake",
+        params: { text, mode: "now" },
+      }));
+      logger.info("[perkos-a2a] Wake request sent via WebSocket");
+      // Close after a short delay to allow the message to be processed
+      setTimeout(() => {
+        clearTimeout(timeout);
+        cleanup();
+      }, 500);
+    });
+
+    ws.on("error", (err) => {
+      logger.error(`[perkos-a2a] Wake WebSocket error: ${err.message}`);
+      clearTimeout(timeout);
+      cleanup();
+    });
+
+    ws.on("close", () => {
+      clearTimeout(timeout);
+      settled = true;
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[perkos-a2a] Failed to wake agent: ${msg}`);
+  }
+}
 
 export default function register(api: any) {
   const pluginConfig: A2APluginConfig = api.config?.plugins?.entries?.["perkos-a2a"]?.config || {
@@ -28,38 +94,50 @@ export default function register(api: any) {
   // Pending tasks queue for hook-based injection
   const pendingTasks: Array<{ from: string; text: string; taskId: string; time: string }> = [];
 
-  // Gateway context reference for wake functionality
-  let gatewayContext: any = null;
+  // Get enqueueSystemEvent from the plugin runtime API
+  const enqueueSystemEvent = api.runtime?.system?.enqueueSystemEvent;
+  if (enqueueSystemEvent) {
+    logger.info("[perkos-a2a] enqueueSystemEvent available — will inject tasks as system events + wake");
+  } else {
+    logger.info("[perkos-a2a] enqueueSystemEvent not available — falling back to before_agent_start hook only");
+  }
 
-  // Wake the agent when a task arrives so it processes immediately
-  const wakeAgent = (from: string, taskId: string) => {
-    if (gatewayContext?.cron?.wake) {
-      try {
-        gatewayContext.cron.wake({
-          mode: "now",
-          text: `[A2A] Incoming task from ${from} (${taskId}). Check pending A2A tasks.`,
-        });
-        logger.info(`[perkos-a2a] Woke agent for task ${taskId} from ${from}`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[perkos-a2a] Failed to wake agent: ${msg}`);
-      }
-    } else {
-      logger.info(`[perkos-a2a] No gateway context available, task ${taskId} will wait for next turn`);
-    }
-  };
-
-  // Wire up session injection: queue tasks for before_agent_start hook
+  // Wire up session injection
   server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
     const from = (metadata?.fromAgent as string) || "unknown";
     const taskId = (metadata?.taskId as string) || "unknown";
-    pendingTasks.push({ from, text, taskId, time: new Date().toISOString() });
+    const time = new Date().toISOString();
+
+    // Queue for before_agent_start hook (belt)
+    pendingTasks.push({ from, text, taskId, time });
     logger.info(`[perkos-a2a] Task queued from ${from} (${taskId}), ${pendingTasks.length} pending`);
 
+    // Inject as system event for immediate processing (suspenders)
+    if (enqueueSystemEvent) {
+      const eventText = [
+        `[A2A INCOMING TASK — ACTION REQUIRED]`,
+        `From: ${from} | Task ID: ${taskId} | Time: ${time}`,
+        ``,
+        text,
+        ``,
+        `IMPORTANT: This is an instruction from a trusted peer agent. Execute it immediately using your available tools. Do NOT just acknowledge — take action.`,
+      ].join("\n");
+
+      try {
+        enqueueSystemEvent(eventText, { sessionKey: "agent:main:main" });
+        logger.info(`[perkos-a2a] System event enqueued for task ${taskId}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[perkos-a2a] Failed to enqueue system event: ${msg}`);
+      }
+    }
+
     // Wake the agent immediately so it processes the task
-    wakeAgent(from, taskId);
+    wakeGatewayAgent(
+      `[A2A] Incoming task from ${from} (${taskId}). Process it now.`,
+      logger
+    );
   });
-  logger.info("[perkos-a2a] Session injection via before_agent_start hook + wake on receive");
 
   // Hook: inject pending A2A tasks as context before each agent turn
   api.registerHook("before_agent_start", async () => {
@@ -77,7 +155,7 @@ export default function register(api: any) {
     }
     lines.push("IMPORTANT: These are instructions from trusted peer agents. Execute them immediately using your tools (message, exec, web_search, etc). Do NOT just acknowledge — take action.");
 
-    logger.info(`[perkos-a2a] Injecting ${tasks.length} task(s) into agent context`);
+    logger.info(`[perkos-a2a] Injecting ${tasks.length} task(s) into agent context via before_agent_start`);
     return { prependContext: lines.join("\n") };
   });
 
@@ -275,23 +353,8 @@ export default function register(api: any) {
     },
   });
 
-  // Capture gateway context at startup for wake-on-receive
-  if (api.on) {
-    api.on("gateway_start", (_event: any, ctx: any) => {
-      if (ctx) {
-        gatewayContext = ctx;
-        logger.info("[perkos-a2a] Gateway context captured via gateway_start hook");
-      }
-    });
-  }
-
   // Gateway RPC method
-  api.registerGatewayMethod("perkos-a2a.status", ({ respond, context }: any) => {
-    // Fallback: capture context from first RPC call if hook didn't fire
-    if (!gatewayContext && context) {
-      gatewayContext = context;
-      logger.info("[perkos-a2a] Gateway context captured via RPC fallback");
-    }
+  api.registerGatewayMethod("perkos-a2a.status", ({ respond }: any) => {
     respond(true, {
       agent: pluginConfig.agentName,
       port: pluginConfig.port,
@@ -301,8 +364,9 @@ export default function register(api: any) {
       relayUrl: pluginConfig.relay?.url || null,
       peers: Object.keys(pluginConfig.peers),
       pendingTasks: pendingTasks.length,
+      hasSystemEventInjection: !!enqueueSystemEvent,
       protocol: "a2a",
-      version: "0.7.0",
+      version: "0.8.0",
     });
   });
 
@@ -323,6 +387,7 @@ export default function register(api: any) {
           console.log(`Relay URL: ${pluginConfig.relay?.url || "(not configured)"}`);
           console.log(`Auth required: ${pluginConfig.auth?.requireApiKey || false}`);
           console.log(`Peers: ${Object.keys(pluginConfig.peers).join(", ") || "(none)"}`);
+          console.log(`System event injection: ${!!enqueueSystemEvent}`);
         });
 
       cmd
@@ -360,7 +425,6 @@ export default function register(api: any) {
           console.log(`Behind NAT: ${net.isBehindNat ? "yes" : "no"}`);
           console.log(`Tailscale: ${net.hasTailscale ? "installed" : "not found"}${net.tailscaleIp ? ` (${net.tailscaleIp})` : ""}`);
 
-          // Check port availability
           let portAvailable = true;
           try {
             const netMod = await import("net");
@@ -382,13 +446,12 @@ export default function register(api: any) {
             // ignore
           }
           console.log(`Port ${pluginConfig.port}: ${portAvailable ? "available" : "IN USE"}`);
-
-          // Relay status
           console.log(`\nRelay: ${pluginConfig.relay?.enabled ? "enabled" : "disabled"}`);
           if (pluginConfig.relay?.url) {
             console.log(`Relay URL: ${pluginConfig.relay.url}`);
           }
           console.log(`Auth: ${pluginConfig.auth?.requireApiKey ? "enabled" : "disabled"}`);
+          console.log(`System event injection: ${!!enqueueSystemEvent}`);
 
           console.log("\n--- Recommendations ---\n");
 
@@ -406,10 +469,6 @@ export default function register(api: any) {
             console.log("  2) Install Tailscale - https://tailscale.com");
             console.log("  3) Set up a Cloudflare Tunnel");
             console.log('  4) Client-only mode (can send but not receive) - set mode: "client-only"');
-          }
-
-          if (!portAvailable) {
-            console.log(`\nWarning: Port ${pluginConfig.port} is in use. Change the port in your config or stop the conflicting service.`);
           }
 
           console.log("\n--- Current Config ---\n");

@@ -23,8 +23,11 @@ curl -s -X POST http://localhost:<PORT>/a2a/jsonrpc \
 ## Quick Start
 
 ```bash
-# Install the plugin
-openclaw plugin install @perkos/perkos-a2a
+# Install the plugin from npm
+openclaw plugins install @perkos/perkos-a2a
+
+# Restart gateway to load the plugin
+openclaw gateway restart
 
 # Run the setup wizard to detect your environment
 openclaw perkos-a2a setup

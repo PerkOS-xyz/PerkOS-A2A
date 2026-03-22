@@ -97,6 +97,8 @@ export interface A2APluginConfig {
   skills: AgentSkill[];
   peers: PeerConfig;
   mode?: "full" | "client-only" | "relay" | "auto";
+  /** API keys for authenticating outbound requests to specific peers */
+  peerAuth?: { [agentName: string]: string };
   relay?: RelayConfig;
   auth?: AuthConfig;
 }

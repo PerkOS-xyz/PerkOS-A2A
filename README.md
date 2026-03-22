@@ -52,6 +52,9 @@ Add to your `openclaw.json`:
             "apiKey": "your-agent-api-key",
             "enabled": true
           },
+          "peerAuth": {
+            "other-agent": "their-api-key"
+          },
           "auth": {
             "requireApiKey": true,
             "apiKeys": ["key1", "key2"]
@@ -213,6 +216,9 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
     "apiKey": "agent-specific-key",
     "enabled": true
   },
+  "peerAuth": {
+    "other-agent": "their-api-key"
+  },
   "auth": {
     "requireApiKey": true,
     "apiKeys": ["key1", "key2"]
@@ -227,6 +233,7 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
 | `mode` | string | `"auto"` | Operating mode (see table above) |
 | `skills` | array | `[]` | Skills exposed via A2A |
 | `peers` | object | `{}` | Direct peer URLs |
+| `peerAuth` | object | `{}` | API keys for outbound requests to specific peers |
 | `relay.url` | string | - | Relay hub WebSocket URL |
 | `relay.apiKey` | string | - | API key for relay authentication |
 | `relay.enabled` | boolean | `false` | Enable relay connectivity |

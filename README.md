@@ -2,6 +2,24 @@
 
 Agent-to-Agent (A2A) protocol plugin for [OpenClaw](https://openclaw.ai). Enables multi-agent communication using Google's A2A protocol specification with enterprise-grade relay infrastructure for NAT traversal.
 
+## ⚠️ How Message Delivery Works (READ THIS FIRST)
+
+**Tasks are NOT delivered in real-time.** Understanding this is critical:
+
+1. When Agent A sends a task to Agent B, the task is **enqueued** on Agent B's A2A server
+2. The task is injected into Agent B's context at the **start of their next turn** (via the `before_agent_start` hook)
+3. This means Agent B will only see the message **when their human writes something** (triggering a new turn)
+4. A `completed` status on `perkos_a2a_send` means "delivered to the queue" — **NOT** "the agent read and processed it"
+
+**To inspect pending tasks manually:**
+```bash
+curl -s -X POST http://localhost:<PORT>/a2a/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tasks/list","id":1,"params":{}}' | python3 -m json.tool
+```
+
+**Fallback:** If session injection is not available, tasks are written as markdown files to the workspace.
+
 ## Quick Start
 
 ```bash
@@ -188,7 +206,7 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
   "mode": "auto",
   "skills": [],
   "peers": {
-    "agent-on-vps": "http://10.0.0.2:5050"
+    "other-agent": "http://10.0.0.2:5050"
   },
   "relay": {
     "url": "wss://relay.perkos.xyz",
@@ -202,31 +220,13 @@ RELAY_PORT=6060 RELAY_API_KEYS=key1,key2 npx tsx bin/relay.ts
 }
 ```
 
-### Peer Routing
-
-The plugin resolves targets in this order:
-
-1. **Direct HTTP** — if the target has a URL in `peers`, try HTTP first
-2. **Relay fallback** — if HTTP fails or no URL is configured, route via relay
-
-**Important:** Only add agents to `peers` if they have an HTTP endpoint you can reach directly. For agents behind NAT that are only reachable via relay, **do not add them to `peers`** — the plugin will automatically route to them through the relay.
-
-```json
-"peers": {
-  "agent-on-vps": "http://10.0.0.2:5050",
-  "another-vps-agent": "http://10.0.0.3:5050"
-}
-```
-
-In this example, agents behind NAT (not listed) are reached via relay automatically.
-
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `agentName` | string | `"agent"` | This agent's name in the council |
 | `port` | number | `5050` | HTTP server port |
 | `mode` | string | `"auto"` | Operating mode (see table above) |
 | `skills` | array | `[]` | Skills exposed via A2A |
-| `peers` | object | `{}` | Direct peer URLs (HTTP-reachable agents only) |
+| `peers` | object | `{}` | Direct peer URLs |
 | `relay.url` | string | - | Relay hub WebSocket URL |
 | `relay.apiKey` | string | - | API key for relay authentication |
 | `relay.enabled` | boolean | `false` | Enable relay connectivity |
@@ -248,9 +248,7 @@ When `auth.requireApiKey` is enabled, inbound HTTP requests must include an API 
 
 ## Session Injection
 
-When a task arrives via relay, the plugin queues it and injects it into the agent's session using the `before_agent_start` hook. The task content appears as prepended context on the agent's next turn, allowing the agent to see and respond to A2A messages naturally.
-
-This works automatically — no additional configuration needed.
+When a task is received, the plugin attempts to inject it directly into the agent's OpenClaw session using the plugin API (`api.injectMessage`). If session injection is not available, tasks fall back to writing markdown files to the workspace.
 
 ## Agent Tools
 
@@ -287,6 +285,91 @@ Both agents join the same tailnet. Use Tailscale IPs for peer URLs.
 
 Set `"mode": "client-only"` to only send tasks (not receive). Combine with relay for full bidirectional support.
 
+## Multi-Agent LAN Setup (Same WiFi)
+
+When running multiple agents on the same local network, follow this guide:
+
+### Step 1: Assign unique ports
+
+Each agent needs its own port. Example:
+
+| Agent | Port |
+|-------|------|
+| agent-a | 5050 |
+| agent-b | 5051 |
+| agent-c | 5052 |
+
+### Step 2: Get each agent's local IP
+
+On each Mac, run:
+```bash
+/sbin/ifconfig | grep "inet " | grep -v 127.0.0.1
+```
+Example output: `inet 192.168.1.101 netmask 0xffffff00 broadcast 192.168.1.255`
+
+### Step 3: Configure each agent's `openclaw.json`
+
+Each agent needs `mode: "full"` and **all other agents** as peers (not itself):
+
+**Agent A (192.168.1.101:5050):**
+```json
+{
+  "perkos-a2a": {
+    "enabled": true,
+    "config": {
+      "agentName": "agent-a",
+      "port": 5050,
+      "mode": "full",
+      "peers": {
+        "agent-b": "http://192.168.1.102:5051",
+        "agent-c": "http://192.168.1.103:5052"
+      }
+    }
+  }
+}
+```
+
+**Agent B (192.168.1.102:5051):**
+```json
+{
+  "perkos-a2a": {
+    "enabled": true,
+    "config": {
+      "agentName": "agent-b",
+      "port": 5051,
+      "mode": "full",
+      "peers": {
+        "agent-a": "http://192.168.1.101:5050",
+        "agent-c": "http://192.168.1.103:5052"
+      }
+    }
+  }
+}
+```
+
+### Step 4: Restart each gateway
+
+```bash
+openclaw gateway restart
+```
+
+### Step 5: Verify connectivity
+
+From any agent, use the `perkos_a2a_discover` tool or:
+```bash
+curl -s http://<peer-ip>:<peer-port>/a2a/jsonrpc \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tasks/list","id":1,"params":{}}'
+```
+
+### Important notes
+
+- **No relay needed** for LAN — set `relay.enabled: false`
+- **macOS port 5000** is used by AirPlay Receiver — avoid it
+- All agents must use `mode: "full"` to both send AND receive
+- **Messages are not instant** — see "How Message Delivery Works" section above
+- After config changes, always `openclaw gateway restart`
+
 ## Troubleshooting
 
 **Relay connection failing:**
@@ -301,11 +384,6 @@ Change the port in config, or run `lsof -i :5050` to find the conflicting proces
 - Verify the peer URL is correct and reachable
 - Check firewalls/security groups
 - If using relay, verify both agents are connected to the same relay hub
-
-**"relay" is not a valid URL:**
-- Do NOT set `"agent-name": "relay"` in peers — this is not valid
-- Agents reachable only via relay should be **omitted from peers entirely**
-- The plugin auto-routes to relay when no peer URL exists for a target
 
 **Auth errors (401):**
 - Ensure your API key is in the target agent's `auth.apiKeys` list

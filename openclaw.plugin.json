@@ -1,7 +1,7 @@
 {
   "id": "perkos-a2a",
   "name": "PerkOS A2A",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Agent-to-Agent (A2A) protocol communication for OpenClaw agents",
   "author": "PerkOS",
   "configSchema": {
@@ -70,6 +70,11 @@
           }
         },
         "description": "Relay hub configuration for NAT traversal"
+      },
+      "peerAuth": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Map of peer agent names to their API keys for outbound requests"
       },
       "auth": {
         "type": "object",

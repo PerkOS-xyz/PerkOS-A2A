@@ -199,7 +199,7 @@ export default function register(api: any) {
 
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
-        const peerAuth = (pluginConfig as any).peerAuth?.[params.target];
+        const peerAuth = pluginConfig.peerAuth?.[params.target];
         if (peerAuth) {
           headers["x-api-key"] = peerAuth;
         }
@@ -263,7 +263,7 @@ export default function register(api: any) {
       peers: Object.keys(pluginConfig.peers),
       pendingTasks: pendingTasks.length,
       protocol: "a2a",
-      version: "0.5.2",
+      version: "0.6.0",
     });
   });
 

@@ -149,7 +149,7 @@ export class A2AServer {
         ok: true,
         agent: this.config.agentName,
         protocol: "a2a",
-        version: "0.5.0",
+        version: "0.6.0",
         peers: Object.keys(this.config.peers),
         taskCount: this.tasks.size,
         relayConnected: this.isRelayConnected(),
@@ -382,7 +382,7 @@ export class A2AServer {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
 
     // Include auth token if peer has one configured
-    const peerAuth = (this.config as any).peerAuth?.[targetAgent];
+    const peerAuth = this.config.peerAuth?.[targetAgent];
     if (peerAuth) {
       headers["x-api-key"] = peerAuth;
     }

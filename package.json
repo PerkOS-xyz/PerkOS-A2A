@@ -1,7 +1,7 @@
 {
   "name": "@perkos/perkos-a2a",
   "version": "0.6.0",
-  "description": "A2A Protocol communication plugin for OpenClaw \u2014 Agent-to-Agent protocol implementation",
+  "description": "A2A Protocol communication plugin for OpenClaw — Agent-to-Agent protocol implementation",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -45,15 +45,16 @@
     "url": "https://github.com/PerkOS-xyz/PerkOS-A2A"
   },
   "dependencies": {
+    "@perkos/perkos-a2a": "^0.6.0",
     "express": "^4.21.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.0",
-    "typescript": "^5.7.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0"
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.0"

@@ -15,62 +15,24 @@ export { RelayHub } from "./relay.js";
 export { RelayClient } from "./relay-client.js";
 export * from "./types.js";
 
-/**
- * Resolve requestHeartbeatNow from the OpenClaw gateway bundle.
- * Since the plugin runs in-process with the gateway, we can find and call
- * the singleton requestHeartbeatNow function to trigger an immediate agent turn.
- */
-let _requestHeartbeatNow: ((opts?: { reason?: string; coalesceMs?: number }) => void) | null = null;
-let _heartbeatResolved = false;
-
-async function resolveHeartbeatWake(
-  logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
-): Promise<void> {
-  if (_heartbeatResolved) return;
-  _heartbeatResolved = true;
-
-  try {
-    // Find the gateway bundle that exports requestHeartbeatNow
-    const fs = await import("fs");
-    const path = await import("path");
-    const openclawDir = path.join(path.dirname(require.resolve("openclaw/package.json")), "dist");
-
-    // Look for the reply-*.js bundle which exports requestHeartbeatNow
-    const files = fs.readdirSync(openclawDir).filter((f: string) => f.startsWith("reply-") && f.endsWith(".js"));
-    for (const file of files) {
-      try {
-        const mod = await import(path.join(openclawDir, file));
-        // Find requestHeartbeatNow among the minified exports
-        for (const [key, value] of Object.entries(mod)) {
-          if (typeof value === "function" && value.toString().includes("pendingReason") && value.length <= 1) {
-            _requestHeartbeatNow = value as any;
-            logger.info(`[perkos-a2a] Found requestHeartbeatNow in gateway bundle (export: ${key})`);
-            return;
-          }
-        }
-      } catch {}
-    }
-    logger.info("[perkos-a2a] requestHeartbeatNow not found in gateway bundle — wake will rely on system events + next turn");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.info(`[perkos-a2a] Could not resolve heartbeat wake: ${msg}`);
-  }
-}
+type HeartbeatWakeFn = (opts?: { reason?: string; coalesceMs?: number; sessionKey?: string }) => void;
 
 function wakeGatewayAgent(
+  requestHeartbeatNow: HeartbeatWakeFn | undefined,
   reason: string,
-  logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+  logger: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void },
+  sessionKey = "agent:main"
 ): void {
-  if (_requestHeartbeatNow) {
+  if (typeof requestHeartbeatNow === "function") {
     try {
-      _requestHeartbeatNow({ reason });
-      logger.info(`[perkos-a2a] Wake triggered via requestHeartbeatNow: ${reason}`);
+      requestHeartbeatNow({ reason, sessionKey });
+      logger.info(`[perkos-a2a] Wake triggered via runtime.system.requestHeartbeatNow: ${reason} (session: ${sessionKey})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error(`[perkos-a2a] requestHeartbeatNow failed: ${msg}`);
+      logger.error(`[perkos-a2a] runtime.system.requestHeartbeatNow failed: ${msg}`);
     }
   } else {
-    logger.info(`[perkos-a2a] No wake mechanism available — task will process on next agent turn`);
+    logger.info("[perkos-a2a] runtime.system.requestHeartbeatNow unavailable — task will process on next agent turn");
   }
 }
 
@@ -88,12 +50,18 @@ export default function register(api: any) {
   // Pending tasks queue for hook-based injection
   const pendingTasks: Array<{ from: string; text: string; taskId: string; time: string }> = [];
 
-  // Get enqueueSystemEvent from the plugin runtime API
+  // Get system helpers from the plugin runtime API
   const enqueueSystemEvent = api.runtime?.system?.enqueueSystemEvent;
+  const requestHeartbeatNow = api.runtime?.system?.requestHeartbeatNow as HeartbeatWakeFn | undefined;
   if (enqueueSystemEvent) {
     logger.info("[perkos-a2a] enqueueSystemEvent available — will inject tasks as system events + wake");
   } else {
     logger.info("[perkos-a2a] enqueueSystemEvent not available — falling back to before_agent_start hook only");
+  }
+  if (requestHeartbeatNow) {
+    logger.info("[perkos-a2a] runtime.system.requestHeartbeatNow available — immediate wake enabled");
+  } else {
+    logger.info("[perkos-a2a] runtime.system.requestHeartbeatNow unavailable — wake will rely on next agent turn");
   }
 
   // Wire up session injection
@@ -128,8 +96,10 @@ export default function register(api: any) {
 
     // Wake the agent immediately so it processes the task
     wakeGatewayAgent(
+      requestHeartbeatNow,
       `[A2A] Incoming task from ${from} (${taskId}). Process it now.`,
-      logger
+      logger,
+      "agent:main"
     );
   });
 
@@ -152,9 +122,6 @@ export default function register(api: any) {
     logger.info(`[perkos-a2a] Injecting ${tasks.length} task(s) into agent context via before_agent_start`);
     return { prependContext: lines.join("\n") };
   });
-
-  // Resolve heartbeat wake mechanism at startup
-  resolveHeartbeatWake(logger).catch(() => {});
 
   // Start A2A server as background service
   api.registerService({

@@ -9,6 +9,8 @@
  */
 
 import { A2AServer, detectNetworking } from "./server.js";
+import { randomUUID } from "crypto";
+import path from "path";
 import type { A2APluginConfig } from "./types.js";
 export { A2AServer, detectNetworking } from "./server.js";
 export { RelayHub } from "./relay.js";
@@ -63,6 +65,87 @@ export default function register(api: any) {
   } else {
     logger.info("[perkos-a2a] runtime.system.requestHeartbeatNow unavailable — wake will rely on next agent turn");
   }
+
+  server.setTaskResultHandler(async (task, text) => {
+    const cfg = await api.runtime?.config?.loadConfig?.();
+    if (!api.runtime?.agent?.runEmbeddedAgent || !cfg) {
+      task.status = {
+        state: "completed",
+        timestamp: new Date().toISOString(),
+      };
+      return;
+    }
+
+    const agentDir = api.runtime.agent.resolveAgentDir(cfg);
+    const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg);
+    await api.runtime.agent.ensureAgentWorkspace(cfg);
+
+    const sessionId = `perkos-a2a:task:${task.id}`;
+    const prompt = [
+      `You are handling an incoming A2A task from agent ${task.metadata?.fromAgent || "unknown"}.`,
+      `Task ID: ${task.id}`,
+      `Context ID: ${task.contextId}`,
+      "",
+      "Execute the request below and return the actual final answer for the peer agent.",
+      "Do not describe internal steps unless the task explicitly asks for them.",
+      "Return only the useful final response.",
+      "",
+      text,
+    ].join("\n");
+
+    const result = await api.runtime.agent.runEmbeddedAgent({
+      sessionId,
+      runId: randomUUID(),
+      sessionFile: path.join(agentDir, "sessions", `perkos-a2a-task-${task.id}.jsonl`),
+      workspaceDir,
+      prompt,
+      timeoutMs: api.runtime.agent.resolveAgentTimeoutMs(cfg),
+    });
+
+    const finalText = (
+      result?.meta?.finalAssistantVisibleText ||
+      result?.payloads?.map((p: any) => p?.text).filter(Boolean).join("\n\n") ||
+      ""
+    ).trim();
+
+    if (finalText) {
+      task.artifacts.push({
+        kind: "artifact",
+        artifactId: randomUUID(),
+        parts: [{ kind: "text", text: finalText }],
+      });
+      task.status = {
+        state: "completed",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "agent",
+          parts: [{ kind: "text", text: finalText }],
+        },
+      };
+      logger.info(`[perkos-a2a] Task ${task.id} final result captured from embedded agent`);
+    } else {
+      task.status = {
+        state: "completed",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "agent",
+          parts: [{ kind: "text", text: "Task executed but no final visible text was captured." }],
+        },
+      };
+      logger.info(`[perkos-a2a] Task ${task.id} executed, but no final visible text was captured`);
+    }
+  });
+
+  server.setTaskFailureHandler(async (task, errorText) => {
+    task.status = {
+      state: "failed",
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "agent",
+        parts: [{ kind: "text", text: errorText }],
+      },
+    };
+  });
 
   // Wire up session injection
   server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
@@ -330,7 +413,7 @@ export default function register(api: any) {
       pendingTasks: pendingTasks.length,
       hasSystemEventInjection: !!enqueueSystemEvent,
       protocol: "a2a",
-      version: "0.8.1",
+      version: "0.8.4",
     });
   });
 

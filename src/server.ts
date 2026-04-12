@@ -20,6 +20,9 @@ import type {
   RelayAgentEntry,
 } from "./types.js";
 
+export type TaskResultHandler = (task: Task, text: string) => Promise<void> | void;
+export type TaskFailureHandler = (task: Task, errorText: string) => Promise<void> | void;
+
 /** Detect if the host is behind NAT by comparing public IP to local interfaces */
 export async function detectNetworking(): Promise<{
   isBehindNat: boolean;
@@ -69,6 +72,8 @@ export class A2AServer {
   private relayClient: RelayClient | null = null;
   private relayHub: RelayHub | null = null;
   private messageInjector: ((text: string, metadata?: Record<string, unknown>) => void) | null = null;
+  private taskResultHandler: TaskResultHandler | null = null;
+  private taskFailureHandler: TaskFailureHandler | null = null;
 
   constructor(
     config: A2APluginConfig,
@@ -97,6 +102,14 @@ export class A2AServer {
   /** Set the message injector for delivering tasks into the agent session */
   setMessageInjector(injector: (text: string, metadata?: Record<string, unknown>) => void): void {
     this.messageInjector = injector;
+  }
+
+  setTaskResultHandler(handler: TaskResultHandler | null): void {
+    this.taskResultHandler = handler;
+  }
+
+  setTaskFailureHandler(handler: TaskFailureHandler | null): void {
+    this.taskFailureHandler = handler;
   }
 
   isClientOnly(): boolean {
@@ -280,22 +293,30 @@ export class A2AServer {
         });
       }
 
-      task.status = {
-        state: "completed",
-        timestamp: new Date().toISOString(),
-      };
+      if (this.taskResultHandler) {
+        await this.taskResultHandler(task, textParts);
+      } else {
+        task.status = {
+          state: "completed",
+          timestamp: new Date().toISOString(),
+        };
+      }
 
       this.logger.info(`[perkos-a2a] Task ${task.id} completed`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      task.status = {
-        state: "failed",
-        timestamp: new Date().toISOString(),
-        message: {
-          role: "agent",
-          parts: [{ kind: "text", text: msg }],
-        },
-      };
+      if (this.taskFailureHandler) {
+        await this.taskFailureHandler(task, msg);
+      } else {
+        task.status = {
+          state: "failed",
+          timestamp: new Date().toISOString(),
+          message: {
+            role: "agent",
+            parts: [{ kind: "text", text: msg }],
+          },
+        };
+      }
       this.logger.error(`[perkos-a2a] Task ${task.id} failed: ${msg}`);
     }
   }

@@ -10,7 +10,6 @@
 
 import { A2AServer, detectNetworking } from "./server.js";
 import { randomUUID } from "crypto";
-import path from "path";
 import type { A2APluginConfig } from "./types.js";
 export { A2AServer, detectNetworking } from "./server.js";
 export { RelayHub } from "./relay.js";
@@ -49,7 +48,7 @@ export default function register(api: any) {
   const logger = api.logger || console;
   const server = new A2AServer(pluginConfig, logger);
 
-  // Pending tasks queue for hook-based injection
+  // Pending tasks queue for optional hook-based injection/debugging
   const pendingTasks: Array<{ from: string; text: string; taskId: string; time: string }> = [];
 
   // Get system helpers from the plugin runtime API
@@ -67,73 +66,45 @@ export default function register(api: any) {
   }
 
   server.setTaskResultHandler(async (task, text) => {
-    const cfg = await api.runtime?.config?.loadConfig?.();
-    if (!api.runtime?.agent?.runEmbeddedAgent || !cfg) {
-      task.status = {
-        state: "completed",
-        timestamp: new Date().toISOString(),
-      };
-      return;
-    }
-
-    const agentDir = api.runtime.agent.resolveAgentDir(cfg);
-    const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg);
-    await api.runtime.agent.ensureAgentWorkspace(cfg);
-
-    const sessionId = `perkos-a2a:task:${task.id}`;
-    const prompt = [
-      `You are handling an incoming A2A task from agent ${task.metadata?.fromAgent || "unknown"}.`,
+    const from = (task.metadata?.fromAgent as string) || "unknown";
+    const marker = `[A2A_RESULT:${task.id}]`;
+    const eventText = [
+      marker,
+      `From: ${from}`,
       `Task ID: ${task.id}`,
       `Context ID: ${task.contextId}`,
       "",
-      "Execute the request below and return the actual final answer for the peer agent.",
-      "Do not describe internal steps unless the task explicitly asks for them.",
-      "Return only the useful final response.",
+      "Execute the following request and include the final answer in your assistant reply.",
+      `Your final answer must begin with exactly: ${marker}`,
+      "Return the useful final answer after that marker.",
       "",
       text,
     ].join("\n");
 
-    const result = await api.runtime.agent.runEmbeddedAgent({
-      sessionId,
-      runId: randomUUID(),
-      sessionFile: path.join(agentDir, "sessions", `perkos-a2a-task-${task.id}.jsonl`),
-      workspaceDir,
-      prompt,
-      timeoutMs: api.runtime.agent.resolveAgentTimeoutMs(cfg),
+    task.status = {
+      state: "working",
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "agent",
+        parts: [{ kind: "text", text: "Task dispatched to supported system-event execution path." }],
+      },
+    };
+    task.artifacts.push({
+      kind: "artifact",
+      artifactId: randomUUID(),
+      parts: [{ kind: "text", text: `debug: enqueued system event for ${marker}` }],
     });
 
-    const finalText = (
-      result?.meta?.finalAssistantVisibleText ||
-      result?.payloads?.map((p: any) => p?.text).filter(Boolean).join("\n\n") ||
-      ""
-    ).trim();
-
-    if (finalText) {
-      task.artifacts.push({
-        kind: "artifact",
-        artifactId: randomUUID(),
-        parts: [{ kind: "text", text: finalText }],
-      });
-      task.status = {
-        state: "completed",
-        timestamp: new Date().toISOString(),
-        message: {
-          role: "agent",
-          parts: [{ kind: "text", text: finalText }],
-        },
-      };
-      logger.info(`[perkos-a2a] Task ${task.id} final result captured from embedded agent`);
-    } else {
-      task.status = {
-        state: "completed",
-        timestamp: new Date().toISOString(),
-        message: {
-          role: "agent",
-          parts: [{ kind: "text", text: "Task executed but no final visible text was captured." }],
-        },
-      };
-      logger.info(`[perkos-a2a] Task ${task.id} executed, but no final visible text was captured`);
+    if (enqueueSystemEvent) {
+      enqueueSystemEvent(eventText, { sessionKey: "agent:main:main" });
     }
+
+    wakeGatewayAgent(
+      requestHeartbeatNow,
+      `[A2A] Process queued task ${task.id}`,
+      logger,
+      "agent:main"
+    );
   });
 
   server.setTaskFailureHandler(async (task, errorText) => {
@@ -147,63 +118,92 @@ export default function register(api: any) {
     };
   });
 
-  // Wire up session injection
+  // Optional debug/session injection path, kept for visibility but no longer relied on for task completion.
   server.setMessageInjector((text: string, metadata?: Record<string, unknown>) => {
     const from = (metadata?.fromAgent as string) || "unknown";
     const taskId = (metadata?.taskId as string) || "unknown";
     const time = new Date().toISOString();
 
-    // Queue for before_agent_start hook (belt)
     pendingTasks.push({ from, text, taskId, time });
     logger.info(`[perkos-a2a] Task queued from ${from} (${taskId}), ${pendingTasks.length} pending`);
 
-    // Inject as system event for immediate processing (suspenders)
     if (enqueueSystemEvent) {
       const eventText = [
-        `[A2A INCOMING TASK — ACTION REQUIRED]`,
+        `[A2A OBSERVABILITY EVENT]`,
         `From: ${from} | Task ID: ${taskId} | Time: ${time}`,
         ``,
         text,
-        ``,
-        `IMPORTANT: This is an instruction from a trusted peer agent. Execute it immediately using your available tools. Do NOT just acknowledge — take action.`,
       ].join("\n");
 
       try {
         enqueueSystemEvent(eventText, { sessionKey: "agent:main:main" });
-        logger.info(`[perkos-a2a] System event enqueued for task ${taskId}`);
+        logger.info(`[perkos-a2a] Observability system event enqueued for task ${taskId}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[perkos-a2a] Failed to enqueue system event: ${msg}`);
+        logger.error(`[perkos-a2a] Failed to enqueue observability system event: ${msg}`);
       }
     }
 
-    // Wake the agent immediately so it processes the task
     wakeGatewayAgent(
       requestHeartbeatNow,
-      `[A2A] Incoming task from ${from} (${taskId}). Process it now.`,
+      `[A2A] Incoming task from ${from} (${taskId}).`,
       logger,
       "agent:main"
     );
   });
 
-  // Hook: inject pending A2A tasks as context before each agent turn
   api.registerHook("before_agent_start", async () => {
     if (pendingTasks.length === 0) return {};
 
     const tasks = pendingTasks.splice(0, pendingTasks.length);
     const lines = [
-      `[A2A TASK — ACTION REQUIRED] You have ${tasks.length} incoming task(s) from peer agents. Execute each task NOW using your available tools.`,
+      `[A2A OBSERVABILITY] ${tasks.length} inbound task(s) were received by perkos-a2a.`,
+      "These notes are for visibility only. The actual task execution uses supported system-event processing.",
       "",
     ];
     for (const t of tasks) {
-      lines.push(`--- Task from: ${t.from} | ID: ${t.taskId} | ${t.time} ---`);
+      lines.push(`--- From: ${t.from} | ID: ${t.taskId} | ${t.time} ---`);
       lines.push(t.text);
       lines.push("");
     }
-    lines.push("IMPORTANT: These are instructions from trusted peer agents. Execute them immediately using your tools (message, exec, web_search, etc). Do NOT just acknowledge — take action.");
 
-    logger.info(`[perkos-a2a] Injecting ${tasks.length} task(s) into agent context via before_agent_start`);
+    logger.info(`[perkos-a2a] Injecting ${tasks.length} observability note(s) into agent context via before_agent_start`);
     return { prependContext: lines.join("\n") };
+  });
+
+  api.runtime?.events?.onSessionTranscriptUpdate?.((update: any) => {
+    const message = update?.message as any;
+    const text = Array.isArray(message?.parts)
+      ? message.parts
+          .filter((p: any) => p?.kind === "text" && typeof p?.text === "string")
+          .map((p: any) => p.text)
+          .join("\n")
+      : typeof message?.text === "string"
+        ? message.text
+        : "";
+
+    if (!text) return;
+
+    for (const task of server.getTasks()) {
+      const marker = `[A2A_RESULT:${task.id}]`;
+      if (!text.includes(marker)) continue;
+      const finalText = text.slice(text.indexOf(marker) + marker.length).trim();
+      if (!finalText) continue;
+      task.artifacts.push({
+        kind: "artifact",
+        artifactId: randomUUID(),
+        parts: [{ kind: "text", text: finalText }],
+      });
+      task.status = {
+        state: "completed",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "agent",
+          parts: [{ kind: "text", text: finalText }],
+        },
+      };
+      logger.info(`[perkos-a2a] Task ${task.id} completed from transcript update`);
+    }
   });
 
   // Start A2A server as background service

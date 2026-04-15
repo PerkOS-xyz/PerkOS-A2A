@@ -23,6 +23,14 @@ import type {
 export type TaskResultHandler = (task: Task, text: string) => Promise<void> | void;
 export type TaskFailureHandler = (task: Task, errorText: string) => Promise<void> | void;
 
+function appendArtifact(task: Task, text: string): void {
+  task.artifacts.push({
+    kind: "artifact",
+    artifactId: randomUUID(),
+    parts: [{ kind: "text", text }],
+  });
+}
+
 /** Detect if the host is behind NAT by comparing public IP to local interfaces */
 export async function detectNetworking(): Promise<{
   isBehindNat: boolean;
@@ -110,6 +118,10 @@ export class A2AServer {
 
   setTaskFailureHandler(handler: TaskFailureHandler | null): void {
     this.taskFailureHandler = handler;
+  }
+
+  getTasks(): IterableIterator<Task> {
+    return this.tasks.values();
   }
 
   isClientOnly(): boolean {
@@ -228,6 +240,7 @@ export class A2AServer {
       metadata: {
         fromAgent: (message?.metadata?.fromAgent as string) || "unknown",
       },
+      sessionKeyHint: "agent:main",
     };
 
     this.tasks.set(taskId, task);
@@ -235,12 +248,13 @@ export class A2AServer {
       `[perkos-a2a] Task ${taskId} received from ${task.metadata?.fromAgent}`
     );
 
-    this.processTask(task);
+    void this.processTask(task);
     return this.success(rpcId, task);
   }
 
   private async processTask(task: Task): Promise<void> {
     task.status = { state: "working", timestamp: new Date().toISOString() };
+    this.tasks.set(task.id, structuredClone(task));
 
     const textParts = task.messages
       .flatMap((m) => m.parts || [])
@@ -249,18 +263,15 @@ export class A2AServer {
       .join("\n");
 
     try {
-      // Attempt session injection first
+      // Optional session injection for observability
       if (this.messageInjector) {
         this.messageInjector(textParts, {
           source: "a2a",
           fromAgent: task.metadata?.fromAgent,
           taskId: task.id,
         });
-        task.artifacts.push({
-          kind: "artifact",
-          artifactId: randomUUID(),
-          parts: [{ kind: "text", text: "Task injected into agent session" }],
-        });
+        appendArtifact(task, "Task accepted and dispatched for execution");
+        this.tasks.set(task.id, structuredClone(task));
       } else {
         // Fallback: write to file
         const fs = await import("fs");
@@ -286,11 +297,8 @@ export class A2AServer {
 
         fs.writeFileSync(taskFile, content);
 
-        task.artifacts.push({
-          kind: "artifact",
-          artifactId: randomUUID(),
-          parts: [{ kind: "text", text: `Task queued: ${taskFile}` }],
-        });
+        appendArtifact(task, `Task queued: ${taskFile}`);
+        this.tasks.set(task.id, structuredClone(task));
       }
 
       if (this.taskResultHandler) {
@@ -302,6 +310,7 @@ export class A2AServer {
         };
       }
 
+      this.tasks.set(task.id, structuredClone(task));
       this.logger.info(`[perkos-a2a] Task ${task.id} completed`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -317,6 +326,7 @@ export class A2AServer {
           },
         };
       }
+      this.tasks.set(task.id, structuredClone(task));
       this.logger.error(`[perkos-a2a] Task ${task.id} failed: ${msg}`);
     }
   }
@@ -327,11 +337,11 @@ export class A2AServer {
   ): JsonRpcResponse {
     const task = this.tasks.get(params?.id as string);
     if (!task) return this.error(rpcId, 404, "Task not found");
-    return this.success(rpcId, task);
+    return this.success(rpcId, structuredClone(task));
   }
 
   private handleListTasks(rpcId: string): JsonRpcResponse {
-    const allTasks = Array.from(this.tasks.values()).sort(
+    const allTasks = Array.from(this.tasks.values()).map((task) => structuredClone(task)).sort(
       (a, b) =>
         new Date(b.status.timestamp).getTime() -
         new Date(a.status.timestamp).getTime()

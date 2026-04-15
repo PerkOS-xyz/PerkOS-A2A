@@ -55,6 +55,7 @@ export interface Task {
   messages: Message[];
   artifacts: Artifact[];
   metadata?: Record<string, unknown>;
+  sessionKeyHint?: string;
 }
 
 export interface JsonRpcRequest {

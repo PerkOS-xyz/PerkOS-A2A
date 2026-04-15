@@ -1,6 +1,6 @@
 {
   "name": "@perkos/perkos-a2a",
-  "version": "0.8.4",
+  "version": "0.8.11",
   "description": "A2A Protocol communication plugin for OpenClaw — Agent-to-Agent protocol implementation",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "a2a-relay": "./bin/relay.ts"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/bundle.mjs",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit"
   },
@@ -54,7 +54,9 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
-    "typescript": "^5.7.0"
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.0",
+    "esbuild": "^0.25.3"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.0"
